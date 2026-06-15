@@ -13,5 +13,5 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  return <iframe title="F1 Telemetry Analyzer" src="/app/" className="h-screen w-screen border-0" />;
+  return <iframe title="F1 Telemetry Analyzer" src="/app/index.html" className="h-screen w-screen border-0" />;
 }
