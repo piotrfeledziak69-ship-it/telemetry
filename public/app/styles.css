@@ -767,6 +767,68 @@ button:hover, .download-btn:hover {
 #stintTable th:nth-child(5), #stintTable td:nth-child(5) { width: 100px; }
 #stintTable th:nth-child(6), #stintTable td:nth-child(6) { width: 110px; }
 
+/* ===========================================================
+   Stint Summary Table readability
+   =========================================================== */
+#stintTable,
+#practiceStintTable { font-size: 0.94rem; }
+#stintTable th,
+#practiceStintTable th,
+#stintTable td,
+#practiceStintTable td {
+  padding: 12px 14px;
+  vertical-align: middle;
+}
+
+/* Alternating row tint */
+#stintTable tbody tr:nth-child(odd),
+#practiceStintTable tbody tr:nth-child(odd) { background: rgba(255,255,255,0.02); }
+body.light-theme #stintTable tbody tr:nth-child(odd),
+body.light-theme #practiceStintTable tbody tr:nth-child(odd) { background: rgba(0,0,0,0.02); }
+
+/* Compound badge pill */
+#stintTable .compound-badge,
+#practiceStintTable .compound-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.82em;
+  letter-spacing: 0.02em;
+  border: 1.5px solid;
+  font-family: var(--font-display);
+  white-space: nowrap;
+}
+#stintTable .compound-dot,
+#practiceStintTable .compound-dot {
+  width: 12px;
+  height: 12px;
+  box-shadow: 0 0 8px currentColor;
+  flex-shrink: 0;
+}
+
+/* Wear severity colors */
+.wear-low  { color: #4ade80; font-weight: 700; }
+.wear-med  { color: #fbbf24; font-weight: 700; }
+.wear-high { color: #f87171; font-weight: 700; }
+body.light-theme .wear-low  { color: #15803d; }
+body.light-theme .wear-med  { color: #b45309; }
+body.light-theme .wear-high { color: #dc2626; }
+
+/* Grouped wear column borders */
+#stintTable td.group-start,
+#practiceStintTable td.group-start { border-left: 2px solid rgba(225,6,0,0.25) !important; }
+#stintTable td.group-end,
+#practiceStintTable td.group-end   { border-right: 2px solid rgba(225,6,0,0.25) !important; }
+
+/* Wear header group background */
+#stintTable thead tr:nth-child(2) th,
+#practiceStintTable thead tr:nth-child(2) th { background: rgba(225,6,0,0.04); }
+body.light-theme #stintTable thead tr:nth-child(2) th,
+body.light-theme #practiceStintTable thead tr:nth-child(2) th { background: rgba(225,6,0,0.03); }
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: var(--bg-1); }
