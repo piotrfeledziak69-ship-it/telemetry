@@ -755,21 +755,8 @@ async function loadSavedSessions() {
         results: s.results || [],
       }));
 
-      // Custom sorting: Season -> F1 2025 Calendar -> Date
-      mappedSessions.sort((a, b) => {
-        if (a.season !== b.season) return a.season - b.season;
-
-        const orderA = .indexOf(
-          normalizeTrackName(a.track_name),
-        );
-        const orderB = F1_2026_CALENDAR.indexOf(
-          normalizeTrackName(b.track_name),
-        );
-        const valA = orderA === -1 ? 999 : orderA;
-        const valB = orderB === -1 ? 999 : orderB;
-        if (valA !== valB) return valA - valB;
-        return new Date(a.created_at) - new Date(b.created_at);
-      });
+      // Custom sorting: Season -> F1 2026 Calendar -> Date
+      mappedSessions.sort(sortSessionsByCalendar);
 
       allSessions = mappedSessions;
       renderSeasonSelector();
@@ -2831,12 +2818,14 @@ function renderStandingsTable() {
       }
     });
 
-  const scoringSessions = allSessions.filter(
-    (s) =>
-      s.season === currentSeason &&
-      ((s.category || "").toLowerCase() === "race" ||
-        (s.category || "").toLowerCase() === "sprint"),
-  );
+  const scoringSessions = allSessions
+    .filter(
+      (s) =>
+        s.season === currentSeason &&
+        ((s.category || "").toLowerCase() === "race" ||
+          (s.category || "").toLowerCase() === "sprint"),
+    )
+    .sort(sortSessionsByCalendar);
 
   scoringSessions.forEach((session) => {
     if (!session.results) return;
