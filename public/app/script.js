@@ -78,7 +78,7 @@ const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtiamp0aWFqdWd4dmhvYm9xeHdiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwODE5NzUsImV4cCI6MjA5MTY1Nzk3NX0.VI2B5EcQXx_aaXyOB-eGXentTbMRG6obxu6IjUv7juI";
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// F1 2025 Calendar Order for sorting
+// F1 2026 Calendar Order for sorting
 const F1_2026_CALENDAR = [
   "melbourne",
   "shanghai",
@@ -326,11 +326,29 @@ async function handleDownloadQualiTemplate() {
 // Global track normalization for linking sessions
 function normalizeTrackName(name) {
   const n = (name || "").toLowerCase().replace(/[\s-]/g, "_");
+  if (n === "canada" || n === "canadian_grand_prix") return "montreal";
+  if (n === "spain" || n === "spanish_grand_prix" || n === "barcelona") return "catalunya";
+  if (n === "madrid" || n === "madring") return "madring";
   if (n === "vegas" || n === "lasvegas") return "las_vegas";
   if (n === "interlagos") return "brazil";
   if (n === "mexico_city") return "mexico";
   if (n === "abu") return "abu_dhabi";
   return n;
+}
+
+function getTrackCalendarIndex(trackName) {
+  const index = F1_2026_CALENDAR.indexOf(normalizeTrackName(trackName));
+  return index === -1 ? 999 : index;
+}
+
+function sortSessionsByCalendar(a, b) {
+  if ((a.season || 1) !== (b.season || 1)) return (a.season || 1) - (b.season || 1);
+  const calendarDiff = getTrackCalendarIndex(a.track_name) - getTrackCalendarIndex(b.track_name);
+  if (calendarDiff !== 0) return calendarDiff;
+  const categoryOrder = { Sprint: 0, Race: 1 };
+  const categoryDiff = (categoryOrder[a.category] ?? 2) - (categoryOrder[b.category] ?? 2);
+  if (categoryDiff !== 0) return categoryDiff;
+  return new Date(a.created_at || a.session_date || 0) - new Date(b.created_at || b.session_date || 0);
 }
 
 let resizeTimeout;
