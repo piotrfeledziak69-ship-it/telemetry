@@ -1208,18 +1208,24 @@ function renderPracticeStints() {
   stints.forEach((stint, index) => {
     const compKey = String(stint.compound).toUpperCase();
     const dotColor = COMPOUND_COLORS[compKey] || "#888";
+    const rgba = (hex, a) => {
+      const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    };
+    const wearCls = (v) => v < 1.0 ? "wear-low" : v < 2.0 ? "wear-med" : "wear-high";
+    const compoundBadge = `<span class="compound-badge" style="background:${rgba(dotColor, 0.12)};border-color:${rgba(dotColor, 0.45)};color:${dotColor}"><span class="compound-dot" style="background-color:${dotColor}"></span>${stint.compound}</span>`;
     const row = document.createElement("tr");
     row.innerHTML = `
-        <td style="padding: 8px 4px; font-weight: bold; white-space: nowrap;">Stint ${index + 1}</td>
-        <td class="text-center" style="padding: 8px 4px;"><span class="compound-dot" style="background-color: ${dotColor}"></span>${stint.compound}</td>
-        <td class="text-center" style="padding: 8px 4px;">${stint.lapCount}</td>
-        <td class="text-center" style="padding: 8px 4px;">${stint.avgLapSeconds ? secondsToTimeString(stint.avgLapSeconds) : "N/A"}</td>
-        <td class="text-center" style="padding: 8px 4px;">${stint.avgFuel.toFixed(3)}</td>
-        <td class="text-center" style="padding: 8px 4px;">${stint.status}</td>
-        <td class="text-center group-start" style="padding: 8px 4px;">${stint.avgWear.FL.toFixed(2)}</td>
-        <td class="text-center" style="padding: 8px 4px;">${stint.avgWear.FR.toFixed(2)}</td>
-        <td class="text-center" style="padding: 8px 4px;">${stint.avgWear.RL.toFixed(2)}</td>
-        <td class="text-center group-end" style="padding: 8px 4px;">${stint.avgWear.RR.toFixed(2)}</td>
+        <td class="text-center"><strong>Stint ${index + 1}</strong></td>
+        <td class="text-center">${compoundBadge}</td>
+        <td class="text-center">${stint.lapCount}</td>
+        <td class="text-center">${stint.avgLapSeconds ? secondsToTimeString(stint.avgLapSeconds) : "N/A"}</td>
+        <td class="text-center">${stint.avgFuel.toFixed(3)}</td>
+        <td class="text-center">${stint.status}</td>
+        <td class="text-center group-start ${wearCls(stint.avgWear.FL)}">${stint.avgWear.FL.toFixed(2)}</td>
+        <td class="text-center ${wearCls(stint.avgWear.FR)}">${stint.avgWear.FR.toFixed(2)}</td>
+        <td class="text-center ${wearCls(stint.avgWear.RL)}">${stint.avgWear.RL.toFixed(2)}</td>
+        <td class="text-center group-end ${wearCls(stint.avgWear.RR)}">${stint.avgWear.RR.toFixed(2)}</td>
       `;
     stintTableBody.appendChild(row);
   });
