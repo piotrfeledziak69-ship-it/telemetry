@@ -3691,25 +3691,37 @@ function renderStintStrip() {
 function renderTopSpeedList(rs) {
   const el = document.getElementById("topSpeedList");
   if (!el) return;
-  const top = rs.speed_traps.slice(0, 8);
+  const top = rs.speed_traps.slice(0, 20);
   if (!top.length) {
     el.innerHTML = `<div class="race-story-empty">No speed-trap data.</div>`;
     return;
   }
   const leader = top[0].kmph;
-  el.innerHTML = top
+  const header = `<div class="speed-row speed-row-head">
+      <span class="speed-rank">#</span>
+      <span class="speed-name">Driver</span>
+      <span class="speed-team">Team</span>
+      <span class="speed-val">Top Speed</span>
+      <span class="speed-bar-cell">Relative</span>
+      <span class="speed-delta">Δ Leader</span>
+    </div>`;
+  const rows = top
     .map((s, i) => {
       const isPlayer = s.name === rs.player_name;
       const delta = s.kmph - leader;
+      const pct = Math.max(20, Math.round((s.kmph / leader) * 100));
+      const barColor = isPlayer ? "#e10600" : teamColorFor(s.team);
       return `<div class="speed-row${isPlayer ? " is-player" : ""}">
         <span class="speed-rank">${i + 1}</span>
         <span class="speed-name">${s.name}</span>
         <span class="speed-team" style="color:${teamColorFor(s.team)}">${normalizeTeamName(s.team)}</span>
         <span class="speed-val">${s.kmph} km/h</span>
+        <span class="speed-bar-cell"><span class="speed-bar" style="width:${pct}%;background:${barColor}"></span></span>
         <span class="speed-delta">${delta === 0 ? "—" : delta + " km/h"}</span>
       </div>`;
     })
     .join("");
+  el.innerHTML = header + rows;
 }
 
 function renderPaceDeltaChart() {
