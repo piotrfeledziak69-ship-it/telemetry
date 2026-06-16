@@ -3441,6 +3441,8 @@ function renderDriverAssignments(driverNames) {
 // ------------------ Supabase persistence helpers ------------------
 async function saveDriverTeamsToDB(obj) {
   if (!obj || Object.keys(obj).length === 0) return;
+  const db = getSupabaseClient();
+  if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
   const rows = Object.entries(obj).map(([driver, team]) => ({
     season: currentSeason,
     driver_name: driver,
@@ -3448,14 +3450,16 @@ async function saveDriverTeamsToDB(obj) {
   }));
 
   // Upsert rows using season + driver_name as unique constraint
-  const { error } = await supabaseClient
+  const { error } = await db
     .from("driver_teams")
     .upsert(rows, { onConflict: "season,driver_name" });
   if (error) throw error;
 }
 
 async function loadDriverTeamsFromDB(season) {
-  const { data, error } = await supabaseClient
+  const db = getSupabaseClient();
+  if (!db) return {};
+  const { data, error } = await db
     .from("driver_teams")
     .select("driver_name,team")
     .eq("season", season);
