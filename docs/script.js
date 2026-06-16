@@ -1747,6 +1747,62 @@ function renderSessionInfo() {
   });
 }
 
+// Exclude pit laps, the starting lap, and red-flag laps from "clean" race-pace metrics
+function isCleanRaceLap(lap) {
+  if (!lap) return false;
+  if (Number(lap.lap) === 1) return false;
+  if (Number(lap.pit_status || 0) === 1) return false;
+  if (Number(lap.sc_status || 0) === 3) return false;
+  return true;
+}
+
+// Returns lap numbers where the player pitted, used to draw vertical lines on race charts
+function getPlayerPitLaps() {
+  const stints = currentData?.stints || [];
+  if (stints.length > 1) {
+    return stints
+      .slice(0, -1)
+      .map((s) => Number(s["end-lap"]))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }
+  const laps = currentData?.lap_history || [];
+  return laps
+    .filter((l) => Number(l.pit_status) === 1)
+    .map((l) => Number(l.lap))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+// Chart.js plugin: draws dashed vertical "PIT" markers at given lap numbers.
+// Usage: register in `plugins: [pitLinesPlugin]` and pass options via
+// `options.plugins.pitLines = { laps: [...], color: '#ffc233' }`.
+const pitLinesPlugin = {
+  id: "pitLines",
+  afterDatasetsDraw(chart, _args, opts) {
+    const laps = (opts && opts.laps) || [];
+    if (!laps.length) return;
+    const { ctx, chartArea, scales } = chart;
+    const x = scales.x;
+    if (!x) return;
+    const color = (opts && opts.color) || "rgba(255, 194, 51, 0.75)";
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 1.4;
+    ctx.fillStyle = color;
+    ctx.font = "10px 'JetBrains Mono', monospace";
+    laps.forEach((lap) => {
+      const xPos = x.getPixelForValue(lap);
+      if (xPos < chartArea.left || xPos > chartArea.right) return;
+      ctx.beginPath();
+      ctx.moveTo(xPos, chartArea.top);
+      ctx.lineTo(xPos, chartArea.bottom);
+      ctx.stroke();
+      ctx.fillText("PIT L" + lap, xPos + 3, chartArea.top + 11);
+    });
+    ctx.restore();
+  },
+};
+
 function calculateStints() {
   const laps = currentData.lap_history;
   if (!laps || laps.length === 0) return [];
@@ -1796,6 +1852,7 @@ function calculateStints() {
 
         // Average lap time for the stint (seconds)
         const stintLapTimes = stintLaps
+          .filter(isCleanRaceLap)
           .map((l) => timeStringToSeconds(l.lap_time))
           .filter((v) => typeof v === "number" && v > 0);
         const avgLapSeconds =
@@ -1900,6 +1957,7 @@ function calculateStints() {
 
       // compute avg lap time for this generated stint
       const stintLapTimes = s.laps
+        .filter(isCleanRaceLap)
         .map((l) => timeStringToSeconds(l.lap_time))
         .filter((v) => typeof v === "number" && v > 0);
       const avgLapSeconds =
@@ -3479,12 +3537,14 @@ function renderPositionChart(rs) {
   charts.positionChart = new Chart(ctx.getContext("2d"), {
     type: "line",
     data: { labels, datasets },
+    plugins: [pitLinesPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } },
+        pitLines: { laps: getPlayerPitLaps() },
         tooltip: {
           callbacks: {
             label: (ctx) => `${ctx.dataset.label}: P${ctx.parsed.y}`,
@@ -3545,11 +3605,13 @@ function renderOvertakesChart(rs) {
         },
       ],
     },
+    plugins: [pitLinesPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
         legend: { position: "bottom" },
+        pitLines: { laps: getPlayerPitLaps() },
         tooltip: {
           callbacks: {
             label: (c) => {
@@ -3629,25 +3691,37 @@ function renderStintStrip() {
 function renderTopSpeedList(rs) {
   const el = document.getElementById("topSpeedList");
   if (!el) return;
-  const top = rs.speed_traps.slice(0, 8);
+  const top = rs.speed_traps.slice(0, 20);
   if (!top.length) {
     el.innerHTML = `<div class="race-story-empty">No speed-trap data.</div>`;
     return;
   }
   const leader = top[0].kmph;
-  el.innerHTML = top
+  const header = `<div class="speed-row speed-row-head">
+      <span class="speed-rank">#</span>
+      <span class="speed-name">Driver</span>
+      <span class="speed-team">Team</span>
+      <span class="speed-val">Top Speed</span>
+      <span class="speed-bar-cell">Relative</span>
+      <span class="speed-delta">Δ Leader</span>
+    </div>`;
+  const rows = top
     .map((s, i) => {
       const isPlayer = s.name === rs.player_name;
       const delta = s.kmph - leader;
+      const pct = Math.max(20, Math.round((s.kmph / leader) * 100));
+      const barColor = isPlayer ? "#e10600" : teamColorFor(s.team);
       return `<div class="speed-row${isPlayer ? " is-player" : ""}">
         <span class="speed-rank">${i + 1}</span>
         <span class="speed-name">${s.name}</span>
         <span class="speed-team" style="color:${teamColorFor(s.team)}">${normalizeTeamName(s.team)}</span>
         <span class="speed-val">${s.kmph} km/h</span>
+        <span class="speed-bar-cell"><span class="speed-bar" style="width:${pct}%;background:${barColor}"></span></span>
         <span class="speed-delta">${delta === 0 ? "—" : delta + " km/h"}</span>
       </div>`;
     })
     .join("");
+  el.innerHTML = header + rows;
 }
 
 function renderPaceDeltaChart() {
@@ -3689,11 +3763,13 @@ function renderPaceDeltaChart() {
         },
       ],
     },
+    plugins: [pitLinesPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
         legend: { display: false },
+        pitLines: { laps: getPlayerPitLaps() },
         tooltip: {
           callbacks: {
             label: (c) =>
