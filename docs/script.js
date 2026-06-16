@@ -71,12 +71,22 @@ const trackToFlag = {
   "abu dhabi": "🇦🇪",
 };
 
-// Initialize Supabase
-// Replace these with your actual Supabase project credentials
+// Initialize Supabase when the CDN client is available. Keep the UI usable if
+// GitHub Pages blocks or delays the database library.
 const SUPABASE_URL = "https://kbjjtiajugxvhoboqxwb.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtiamp0aWFqdWd4dmhvYm9xeHdiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwODE5NzUsImV4cCI6MjA5MTY1Nzk3NX0.VI2B5EcQXx_aaXyOB-eGXentTbMRG6obxu6IjUv7juI";
-const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let supabaseClient = null;
+
+function getSupabaseClient() {
+  if (supabaseClient) return supabaseClient;
+  if (!window.supabase || typeof window.supabase.createClient !== "function") {
+    console.warn("Database client is not available yet; running without saved sessions.");
+    return null;
+  }
+  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return supabaseClient;
+}
 
 // F1 2026 Calendar Order for sorting
 const F1_2026_CALENDAR = [
@@ -141,11 +151,11 @@ window.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem("theme", isLight ? "light" : "dark");
   });
 
-  // Load sessions then attempt to auto-load driver teams for the selected season
-  loadSavedSessions().then(async () => {
-    await autoLoadDriverTeams();
-    initCollapsibleSections();
-  });
+  renderSeasonSelector();
+  initCollapsibleSections();
+
+  // Load saved data after the UI is interactive, so a slow DB never blocks clicks.
+  loadSavedSessions().then(() => autoLoadDriverTeams());
 
   const qualiGapToggleBtn = document.getElementById("qualiGapToggleBtn");
   if (qualiGapToggleBtn) {
@@ -836,8 +846,14 @@ function processTelemetryData(data) {
 }
 
 async function loadSavedSessions() {
+  const db = getSupabaseClient();
+  if (!db) {
+    renderSeasonSelector();
+    return;
+  }
+
   try {
-    const { data: sessions, error } = await supabaseClient
+    const { data: sessions, error } = await db
       .from("telemetry_sessions")
       .select("*")
       .order("season", { ascending: true })
@@ -886,6 +902,8 @@ async function loadSavedSessions() {
 
 async function saveSessions(sessions) {
   if (!sessions || sessions.length === 0) return;
+  const db = getSupabaseClient();
+  if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
 
   const dataToInsert = sessions.map((session) => ({
     driver_name: session.driver_name,
@@ -903,7 +921,7 @@ async function saveSessions(sessions) {
     race_story: session.race_story || null,
   }));
 
-  const { error } = await supabaseClient
+  const { error } = await db
     .from("telemetry_sessions")
     .insert(dataToInsert);
 
@@ -932,7 +950,9 @@ async function clearSessionStatus(statusType) {
   });
 
   try {
-    const { error } = await supabaseClient
+    const db = getSupabaseClient();
+    if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
+    const { error } = await db
       .from("telemetry_sessions")
       .update({ lap_history: currentData.lap_history })
       .eq("id", currentData.id);
@@ -957,7 +977,9 @@ async function deleteSession(id, event) {
     return;
 
   try {
-    const { error } = await supabaseClient
+    const db = getSupabaseClient();
+    if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
+    const { error } = await db
       .from("telemetry_sessions")
       .delete()
       .eq("id", id);
@@ -3419,6 +3441,8 @@ function renderDriverAssignments(driverNames) {
 // ------------------ Supabase persistence helpers ------------------
 async function saveDriverTeamsToDB(obj) {
   if (!obj || Object.keys(obj).length === 0) return;
+  const db = getSupabaseClient();
+  if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
   const rows = Object.entries(obj).map(([driver, team]) => ({
     season: currentSeason,
     driver_name: driver,
@@ -3426,14 +3450,16 @@ async function saveDriverTeamsToDB(obj) {
   }));
 
   // Upsert rows using season + driver_name as unique constraint
-  const { error } = await supabaseClient
+  const { error } = await db
     .from("driver_teams")
     .upsert(rows, { onConflict: "season,driver_name" });
   if (error) throw error;
 }
 
 async function loadDriverTeamsFromDB(season) {
-  const { data, error } = await supabaseClient
+  const db = getSupabaseClient();
+  if (!db) return {};
+  const { data, error } = await db
     .from("driver_teams")
     .select("driver_name,team")
     .eq("season", season);
