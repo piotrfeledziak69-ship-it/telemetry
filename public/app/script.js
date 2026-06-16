@@ -2765,41 +2765,53 @@ function createChart(
       const barWidth = x.width / laps.length;
 
       ctx.save();
+      // 1. Background overlays for SC / VSC / Red Flag — grouped per period
+      // with half-lap precision at the start/end boundaries.
+      const COLORS = {
+        1: "rgba(173, 216, 230, 0.22)", // SC – light blue
+        2: "rgba(255, 215, 0, 0.18)",   // VSC – amber
+        3: "rgba(255, 60, 60, 0.22)",   // Red Flag – red
+      };
+      const BORDERS = {
+        1: "rgba(120, 180, 230, 0.55)",
+        2: "rgba(255, 200, 0, 0.55)",
+        3: "rgba(255, 80, 80, 0.7)",
+      };
+      const periods = computeSafetyCarPeriods(laps);
+      periods.forEach((p) => {
+        const xFirst = x.getPixelForValue(p.firstLap);
+        const xLast = x.getPixelForValue(p.lastLap);
+        const xLeft = xFirst + p.startOffset * barWidth;
+        const xRight = xLast + p.endOffset * barWidth;
+        const w = Math.max(2, xRight - xLeft);
+        ctx.fillStyle = COLORS[p.status];
+        ctx.fillRect(xLeft, chartArea.top, w, chartArea.bottom - chartArea.top);
+        // soft borders so the boundary feels intentional, not noisy
+        ctx.strokeStyle = BORDERS[p.status];
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(xLeft + 0.5, chartArea.top);
+        ctx.lineTo(xLeft + 0.5, chartArea.bottom);
+        ctx.moveTo(xLeft + w - 0.5, chartArea.top);
+        ctx.lineTo(xLeft + w - 0.5, chartArea.bottom);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // single centered label with lap range
+        ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+        ctx.font = `${isMobile ? 9 : 10}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        const rangeTxt =
+          p.firstLap === p.lastLap
+            ? `${p.label} L${p.firstLap}`
+            : `${p.label} L${p.firstLap}–${p.lastLap}`;
+        ctx.fillText(rangeTxt, (xLeft + xRight) / 2, chartArea.top + 4);
+      });
+
+      // 2. Vertical lines for pit stops (kept per-lap)
       laps.forEach((lap) => {
         const xPos = x.getPixelForValue(lap.lap);
-
-        // 1. Draw Background Overlays for SC/Red Flag
-        let bgColor = null;
-        let statusLabel = null;
-        if (lap.sc_status === 3) {
-          bgColor = "rgba(255, 0, 0, 0.2)"; // Red Flag
-          statusLabel = "RED";
-        } else if (lap.sc_status === 2) {
-          bgColor = "rgba(255, 255, 0, 0.15)"; // VSC
-          statusLabel = "VSC";
-        } else if (lap.sc_status === 1) {
-          bgColor = "rgba(173, 216, 230, 0.2)"; // SC
-          statusLabel = "SC";
-        }
-
-        if (bgColor) {
-          ctx.fillStyle = bgColor;
-          // Draw a box covering the width of this lap's category
-          ctx.fillRect(
-            xPos - barWidth / 2,
-            chartArea.top,
-            barWidth,
-            chartArea.bottom - chartArea.top,
-          );
-
-          ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
-          ctx.font = `${isMobile ? 9 : 10}px sans-serif`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          ctx.fillText(statusLabel, xPos, chartArea.top + 4);
-        }
-
-        // 2. Draw Vertical Lines for Pit Stops
         if (Number(lap.pit_status) === 1) {
           ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
           ctx.lineWidth = 2;
