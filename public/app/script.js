@@ -900,6 +900,7 @@ async function saveSessions(sessions) {
     starting_fuel: session.starting_fuel,
     stints: session.stints,
     results: session.results,
+    race_story: session.race_story || null,
   }));
 
   const { error } = await supabaseClient
