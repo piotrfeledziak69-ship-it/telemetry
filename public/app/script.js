@@ -1756,6 +1756,83 @@ function isCleanRaceLap(lap) {
   return true;
 }
 
+// Group contiguous SC/VSC/Red-Flag laps into single periods.
+// Returns [{ status, firstLap, lastLap, startOffset, endOffset, label }]
+// where startOffset/endOffset ∈ [-0.5, 0.5] are added to the lap index to
+// describe a half-lap shading boundary. We infer mid-lap start/end by
+// comparing the first/last flagged lap time to the median clean lap time:
+// a "normal" lap means the SC was only active for part of it.
+function computeSafetyCarPeriods(laps) {
+  if (!Array.isArray(laps) || laps.length === 0) return [];
+
+  const cleanTimes = laps
+    .filter(
+      (l) =>
+        Number(l.sc_status || 0) === 0 &&
+        Number(l.pit_status || 0) === 0 &&
+        Number(l.lap) > 1,
+    )
+    .map((l) => timeStringToSeconds(l.lap_time))
+    .filter((t) => typeof t === "number" && t > 0);
+
+  let median = null;
+  if (cleanTimes.length) {
+    const sorted = cleanTimes.slice().sort((a, b) => a - b);
+    median = sorted[Math.floor(sorted.length / 2)];
+  }
+  // SC laps usually cost 15-30s; treat <8s over median as "barely affected"
+  const PARTIAL_THRESHOLD = 8;
+
+  const labelFor = (st) => (st === 3 ? "RED" : st === 2 ? "VSC" : "SC");
+
+  const periods = [];
+  let i = 0;
+  while (i < laps.length) {
+    const st = Number(laps[i].sc_status || 0);
+    if (st === 0) {
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < laps.length && Number(laps[j + 1].sc_status || 0) === st) {
+      j++;
+    }
+    let startOffset = -0.5;
+    let endOffset = 0.5;
+    if (median !== null) {
+      const firstT = timeStringToSeconds(laps[i].lap_time);
+      const lastT = timeStringToSeconds(laps[j].lap_time);
+      if (
+        typeof firstT === "number" &&
+        firstT > 0 &&
+        firstT - median < PARTIAL_THRESHOLD
+      ) {
+        // first SC lap is near normal pace → SC engaged near the end of it
+        startOffset = 0;
+      }
+      if (
+        typeof lastT === "number" &&
+        lastT > 0 &&
+        lastT - median < PARTIAL_THRESHOLD &&
+        j !== i // don't collapse a single-lap period to zero width
+      ) {
+        // last SC lap is near normal pace → SC released near the start of it
+        endOffset = 0;
+      }
+    }
+    periods.push({
+      status: st,
+      firstLap: Number(laps[i].lap),
+      lastLap: Number(laps[j].lap),
+      startOffset,
+      endOffset,
+      label: labelFor(st),
+    });
+    i = j + 1;
+  }
+  return periods;
+}
+
 // Returns lap numbers where the player pitted, used to draw vertical lines on race charts
 function getPlayerPitLaps() {
   const stints = currentData?.stints || [];
