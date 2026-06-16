@@ -846,8 +846,14 @@ function processTelemetryData(data) {
 }
 
 async function loadSavedSessions() {
+  const db = getSupabaseClient();
+  if (!db) {
+    renderSeasonSelector();
+    return;
+  }
+
   try {
-    const { data: sessions, error } = await supabaseClient
+    const { data: sessions, error } = await db
       .from("telemetry_sessions")
       .select("*")
       .order("season", { ascending: true })
@@ -896,6 +902,8 @@ async function loadSavedSessions() {
 
 async function saveSessions(sessions) {
   if (!sessions || sessions.length === 0) return;
+  const db = getSupabaseClient();
+  if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
 
   const dataToInsert = sessions.map((session) => ({
     driver_name: session.driver_name,
@@ -913,7 +921,7 @@ async function saveSessions(sessions) {
     race_story: session.race_story || null,
   }));
 
-  const { error } = await supabaseClient
+  const { error } = await db
     .from("telemetry_sessions")
     .insert(dataToInsert);
 
@@ -942,7 +950,9 @@ async function clearSessionStatus(statusType) {
   });
 
   try {
-    const { error } = await supabaseClient
+    const db = getSupabaseClient();
+    if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
+    const { error } = await db
       .from("telemetry_sessions")
       .update({ lap_history: currentData.lap_history })
       .eq("id", currentData.id);
@@ -967,7 +977,9 @@ async function deleteSession(id, event) {
     return;
 
   try {
-    const { error } = await supabaseClient
+    const db = getSupabaseClient();
+    if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
+    const { error } = await db
       .from("telemetry_sessions")
       .delete()
       .eq("id", id);
