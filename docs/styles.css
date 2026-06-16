@@ -1301,3 +1301,5 @@ body.light-theme #driver-assignments-container { background: #ffffff; }
   min-height: 0 !important;
 }
 .chart-container.auto-height .chart-title { margin-bottom: 10px; }
+.rs-canvas-wrap { position: relative; height: 320px; width: 100%; }
+.rs-canvas-wrap > canvas { width: 100% !important; height: 100% !important; }
