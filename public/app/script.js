@@ -1796,6 +1796,7 @@ function calculateStints() {
 
         // Average lap time for the stint (seconds)
         const stintLapTimes = stintLaps
+          .filter(isCleanRaceLap)
           .map((l) => timeStringToSeconds(l.lap_time))
           .filter((v) => typeof v === "number" && v > 0);
         const avgLapSeconds =
@@ -1900,6 +1901,7 @@ function calculateStints() {
 
       // compute avg lap time for this generated stint
       const stintLapTimes = s.laps
+        .filter(isCleanRaceLap)
         .map((l) => timeStringToSeconds(l.lap_time))
         .filter((v) => typeof v === "number" && v > 0);
       const avgLapSeconds =
