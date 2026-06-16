@@ -1747,6 +1747,62 @@ function renderSessionInfo() {
   });
 }
 
+// Exclude pit laps, the starting lap, and red-flag laps from "clean" race-pace metrics
+function isCleanRaceLap(lap) {
+  if (!lap) return false;
+  if (Number(lap.lap) === 1) return false;
+  if (Number(lap.pit_status || 0) === 1) return false;
+  if (Number(lap.sc_status || 0) === 3) return false;
+  return true;
+}
+
+// Returns lap numbers where the player pitted, used to draw vertical lines on race charts
+function getPlayerPitLaps() {
+  const stints = currentData?.stints || [];
+  if (stints.length > 1) {
+    return stints
+      .slice(0, -1)
+      .map((s) => Number(s["end-lap"]))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  }
+  const laps = currentData?.lap_history || [];
+  return laps
+    .filter((l) => Number(l.pit_status) === 1)
+    .map((l) => Number(l.lap))
+    .filter((n) => Number.isFinite(n) && n > 0);
+}
+
+// Chart.js plugin: draws dashed vertical "PIT" markers at given lap numbers.
+// Usage: register in `plugins: [pitLinesPlugin]` and pass options via
+// `options.plugins.pitLines = { laps: [...], color: '#ffc233' }`.
+const pitLinesPlugin = {
+  id: "pitLines",
+  afterDatasetsDraw(chart, _args, opts) {
+    const laps = (opts && opts.laps) || [];
+    if (!laps.length) return;
+    const { ctx, chartArea, scales } = chart;
+    const x = scales.x;
+    if (!x) return;
+    const color = (opts && opts.color) || "rgba(255, 194, 51, 0.75)";
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 1.4;
+    ctx.fillStyle = color;
+    ctx.font = "10px 'JetBrains Mono', monospace";
+    laps.forEach((lap) => {
+      const xPos = x.getPixelForValue(lap);
+      if (xPos < chartArea.left || xPos > chartArea.right) return;
+      ctx.beginPath();
+      ctx.moveTo(xPos, chartArea.top);
+      ctx.lineTo(xPos, chartArea.bottom);
+      ctx.stroke();
+      ctx.fillText("PIT L" + lap, xPos + 3, chartArea.top + 11);
+    });
+    ctx.restore();
+  },
+};
+
 function calculateStints() {
   const laps = currentData.lap_history;
   if (!laps || laps.length === 0) return [];
