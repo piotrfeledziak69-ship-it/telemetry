@@ -3537,12 +3537,14 @@ function renderPositionChart(rs) {
   charts.positionChart = new Chart(ctx.getContext("2d"), {
     type: "line",
     data: { labels, datasets },
+    plugins: [pitLinesPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } },
+        pitLines: { laps: getPlayerPitLaps() },
         tooltip: {
           callbacks: {
             label: (ctx) => `${ctx.dataset.label}: P${ctx.parsed.y}`,
@@ -3603,11 +3605,13 @@ function renderOvertakesChart(rs) {
         },
       ],
     },
+    plugins: [pitLinesPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
         legend: { position: "bottom" },
+        pitLines: { laps: getPlayerPitLaps() },
         tooltip: {
           callbacks: {
             label: (c) => {
@@ -3747,11 +3751,13 @@ function renderPaceDeltaChart() {
         },
       ],
     },
+    plugins: [pitLinesPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
         legend: { display: false },
+        pitLines: { laps: getPlayerPitLaps() },
         tooltip: {
           callbacks: {
             label: (c) =>
