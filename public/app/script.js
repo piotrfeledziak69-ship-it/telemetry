@@ -858,6 +858,7 @@ async function loadSavedSessions() {
         starting_fuel: s.starting_fuel,
         stints: s.stints || [],
         results: s.results || [],
+        race_story: s.race_story || null,
       }));
 
       // Custom sorting: Season -> F1 2026 Calendar -> Date
