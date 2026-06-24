@@ -164,15 +164,12 @@ window.addEventListener("DOMContentLoaded", () => {
   if (dlQualiBtn)
     dlQualiBtn.addEventListener("click", handleDownloadQualiTemplate);
 
-  document
-    .getElementById("searchTrack")
-    .addEventListener("input", () => renderSavedSessions(allSessions));
-  document
-    .getElementById("filterCategory")
-    .addEventListener("change", () => renderSavedSessions(allSessions));
-  document
-    .getElementById("sortSessions")
-    .addEventListener("change", () => renderSavedSessions(allSessions));
+  const _st = document.getElementById("searchTrack");
+  if (_st) _st.addEventListener("input", () => renderSavedSessions(allSessions));
+  const _fc = document.getElementById("filterCategory");
+  if (_fc) _fc.addEventListener("change", () => renderSavedSessions(allSessions));
+  const _ss = document.getElementById("sortSessions");
+  if (_ss) _ss.addEventListener("change", () => renderSavedSessions(allSessions));
 });
 
 async function handleDownloadTemplate() {
@@ -1011,14 +1008,17 @@ function renderSavedSessions(sessions) {
 
   grid.innerHTML = "";
 
-  // Render summary cards below the session grid instead of above it
+  // Render summary cards at the TOP of the main pane
   let summaryContainer = document.getElementById("seasonSummaryCards");
   if (!summaryContainer) {
     summaryContainer = document.createElement("div");
     summaryContainer.id = "seasonSummaryCards";
     summaryContainer.className = "season-summary";
   }
-  grid.insertAdjacentElement("afterend", summaryContainer);
+  const summaryHost = document.getElementById("seasonStatsHost");
+  if (summaryHost && summaryContainer.parentElement !== summaryHost) {
+    summaryHost.appendChild(summaryContainer);
+  }
   summaryContainer.innerHTML = `
     <div class="stat-card">
       <span class="stat-label">Race Wins</span>
@@ -1037,125 +1037,90 @@ function renderSavedSessions(sessions) {
       <span class="stat-value">⚡ ${sprintPoles}</span>
     </div>
   `;
-  const searchQuery = document
-    .getElementById("searchTrack")
-    .value.toLowerCase();
-  const catFilter = document.getElementById("filterCategory").value;
-  const sortVal = document.getElementById("sortSessions").value;
 
-  // Group sessions by Track + Season + Event type (GP vs Sprint)
-  const trackGroups = {};
-  sessions.forEach((s) => {
-    if (s.season !== currentSeason) return;
+  // Build flat list of sessions for the active season, sorted newest first
+  const displaySessions = sessions
+    .filter((s) => s.season === currentSeason)
+    .filter((s) => s.category !== "Qualifying" && s.category !== "Sprint Shootout")
+    .slice()
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-    // Separate GP (Race/Quali) from Sprint (Sprint/Shootout) into different cards
-    // while keeping Qualifying data attached to its corresponding main session.
-    let eventGroup = s.category;
-    if (s.category === "Qualifying") eventGroup = "Race";
-    if (s.category === "Sprint Shootout") eventGroup = "Sprint";
-
-    const key = `${normalizeTrackName(s.track_name)}_${s.season}_${eventGroup}`;
-    if (!trackGroups[key]) trackGroups[key] = [];
-    trackGroups[key].push(s);
+  // Group by date (YYYY-MM-DD) so we can render date headers
+  const groupsByDate = new Map();
+  displaySessions.forEach((s) => {
+    const d = new Date(s.created_at);
+    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    if (!groupsByDate.has(key)) groupsByDate.set(key, { date: d, items: [] });
+    groupsByDate.get(key).items.push(s);
   });
 
-  // Priority for which session represents the "Card" in the sidebar
-  const priority = {
-    Race: 0,
-    Sprint: 1,
-    "Sprint Shootout": 2,
-    Qualifying: 3,
-    Practice: 4,
+  const fmtTime = (d) =>
+    `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const fmtDateHeader = (d) =>
+    d
+      .toLocaleDateString(undefined, {
+        weekday: "short",
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      })
+      .toUpperCase();
+
+  const catLabel = (c) => {
+    if (!c) return "";
+    if (c === "Sprint Shootout") return "SHOOTOUT";
+    return c.toUpperCase();
   };
 
-  let displaySessions = [];
-  for (const key in trackGroups) {
-    const group = trackGroups[key];
+  for (const { date, items } of groupsByDate.values()) {
+    const header = document.createElement("div");
+    header.className = "session-date-header";
+    header.textContent = fmtDateHeader(date);
+    grid.appendChild(header);
 
-    // Sort group so Race > Sprint > Quali
-    group.sort(
-      (a, b) => (priority[a.category] ?? 99) - (priority[b.category] ?? 99),
-    );
+    items.forEach((session) => {
+      const trackKey = (session.track_name || "").toLowerCase();
+      const flag = trackToFlag[trackKey] || "🏁";
+      const weatherIcon = determineWeatherIcon(session);
+      const isWin =
+        session.category === "Race" &&
+        Number(session.finishing_position) === 1;
+      const winMarker = isWin
+        ? '<span class="result-tag win-marker mini">WIN</span>'
+        : "";
+      const t = new Date(session.created_at);
 
-    const rep = group[0]; // Representative session (usually the Race)
-
-    const matchSearch = (rep.track_name || "")
-      .toLowerCase()
-      .includes(searchQuery);
-    const matchCat = catFilter === "all" || rep.category === catFilter;
-
-    if (matchSearch && matchCat) {
-      displaySessions.push(rep);
-    }
-  }
-
-  if (sortVal === "date_desc")
-    displaySessions.sort(
-      (a, b) => new Date(b.created_at) - new Date(a.created_at),
-    );
-  if (sortVal === "date_asc")
-    displaySessions.sort(
-      (a, b) => new Date(a.created_at) - new Date(b.created_at),
-    );
-
-  displaySessions.forEach((session) => {
-    const trackKey = (session.track_name || "").toLowerCase();
-    const flag = `<span class="flag-icon" title="${session.track_name}">${trackToFlag[trackKey] || "🏁"}</span>`;
-
-    const isWin = Number(session.finishing_position) === 1;
-    const winMarker = isWin
-      ? '<span class="result-tag win-marker">🏁 WIN</span>'
-      : "";
-    const startPos = session.starting_position || 0;
-    const isPole = startPos === 1;
-    const poleMarker = isPole
-      ? '<span class="result-tag pole-marker">🥇 POLE</span>'
-      : "";
-    const weatherIcon = determineWeatherIcon(session);
-
-    const finPos = session.finishing_position || 0;
-    const diff = startPos - finPos;
-    const diffText = diff > 0 ? `+${diff}` : diff < 0 ? diff : "0";
-    const diffClass = diff > 0 ? "pos-gain" : diff < 0 ? "pos-loss" : "";
-
-    const card = document.createElement("div");
-    card.className = `session-card ${currentData && currentData.id === session.id ? "active" : ""}`;
-
-    card.innerHTML = `
-      <button class="delete-btn" title="Delete">🗑️</button>
-      <div class="session-badges">
-        <span class="category-badge">${session.category}</span>
-        ${winMarker}
-        ${poleMarker}
-      </div>
-      <div class="track-title" style="margin-bottom: 2px; font-size: 0.85rem;">${flag} ${session.track_name} ${weatherIcon}</div>
-      <div style="display: flex; justify-content: space-between; align-items: flex-end;">
-        <div style="font-size: 0.75em; color: #888; line-height: 1.2;">
-          ${new Date(session.created_at).toLocaleDateString()}<br>
-          ${session.driver_name}
-        </div>
-        <div style="text-align: right;">
-          <div style="font-size: 0.65em; color: #aaa; text-transform: uppercase;">Pos</div>
-          <div style="font-size: 1.05em; font-weight: bold;">
-            ${startPos || "?"}→${finPos || "?"} 
-            <span class="${diffClass}" style="font-size: 0.8em; margin-left: 2px;">(${diffText})</span>
+      const card = document.createElement("div");
+      card.className = `session-row ${currentData && currentData.id === session.id ? "active" : ""}`;
+      card.innerHTML = `
+        <button class="delete-btn" title="Delete">🗑️</button>
+        <div class="sr-left">
+          <div class="sr-track">
+            <span class="flag-icon">${flag}</span>
+            <span class="sr-track-name">${session.track_name || "Unknown"}</span>
           </div>
+          <div class="sr-time">${fmtTime(t)}</div>
         </div>
-      </div>
-    `;
+        <div class="sr-right">
+          <span class="sr-cat">🏁 ${catLabel(session.category)}</span>
+          <span class="sr-weather">${weatherIcon}</span>
+          ${winMarker}
+        </div>
+      `;
 
-    card.querySelector(".delete-btn").onclick = (e) =>
-      deleteSession(session.id, e);
+      card.querySelector(".delete-btn").onclick = (e) =>
+        deleteSession(session.id, e);
 
-    card.addEventListener("click", (e) => {
-      if (e.target.closest(".delete-btn")) return;
-      currentData = session;
-      renderContent();
-      renderSavedSessions(allSessions);
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".delete-btn")) return;
+        currentData = session;
+        renderContent();
+        renderSavedSessions(allSessions);
+      });
+
+      grid.appendChild(card);
     });
-
-    grid.appendChild(card);
-  });
+  }
 
   renderStandingsTable();
 
@@ -1427,6 +1392,14 @@ function renderPracticeTable() {
     }
     lastCompound = currentComp;
 
+    const prCompKey = String(lap.current_tyre_compound).toUpperCase();
+    const prDotColor = COMPOUND_COLORS[prCompKey] || "#888";
+    const prRgba = (hex, a) => {
+      const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    };
+    const prCompoundBadge = `<span class="compound-badge" style="background:${prRgba(prDotColor, 0.12)};border-color:${prRgba(prDotColor, 0.45)};color:${prDotColor}"><span class="compound-dot" style="background-color:${prDotColor}"></span>${lap.current_tyre_compound}</span>`;
+
     row.innerHTML = `
             <td class="text-center"><input type="checkbox" class="lap-select-cb" ${selectedPracticeLaps.has(lap.lap) ? "checked" : ""}></td>
             <td class="text-center" style="padding: 8px 4px;">${lap.lap}</td>
@@ -1435,7 +1408,7 @@ function renderPracticeTable() {
             <td class="text-center group-start" style="padding: 8px 4px;">${lap.s1}</td>
             <td class="text-center" style="padding: 8px 4px;">${lap.s2}</td>
             <td class="text-center group-end" style="padding: 8px 4px;">${lap.s3}</td>
-            <td class="text-center" style="padding: 8px 4px;">${lap.current_tyre_compound}</td>
+            <td class="text-center" style="padding: 8px 4px;">${prCompoundBadge}</td>
             <td class="text-center" style="padding: 8px 4px;">${lap.fuel_kg.toFixed(2)}</td>
             <td class="text-center" style="padding: 8px 4px;">${fuelConsumed.toFixed(2)}</td>
             <td class="text-center group-start ${getWearClass(lap.tyre_wear.FL)}" style="padding: 8px 4px;">${lap.tyre_wear.FL.toFixed(2)}</td>
@@ -1567,9 +1540,11 @@ function renderQualiResults() {
     const tableDiv = document.createElement("div");
     tableDiv.className = "table-container";
 
+    const weatherIcon = determineWeatherIcon(session);
     let tableHtml = `
-      <h3 style="margin-bottom: 12px; color: var(--accent-red); font-size: 0.9rem; text-transform: uppercase;">
-        ⏱️ ${segmentTitle}
+      <h3 style="margin-bottom: 12px; color: var(--accent-red); font-size: 0.9rem; text-transform: uppercase; display:flex; align-items:center; gap:8px;">
+        <span>⏱️ ${segmentTitle}</span>
+        <span style="font-size:1.1rem;">${weatherIcon}</span>
       </h3>
       <table>
         <thead>
@@ -3113,6 +3088,14 @@ function renderTable() {
     }
     lastCompound = currentComp;
 
+    const rtCompKey = String(lap.current_tyre_compound).toUpperCase();
+    const rtDotColor = COMPOUND_COLORS[rtCompKey] || "#888";
+    const rtRgba = (hex, a) => {
+      const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+      return `rgba(${r},${g},${b},${a})`;
+    };
+    const rtCompoundBadge = `<span class="compound-badge" style="background:${rtRgba(rtDotColor, 0.12)};border-color:${rtRgba(rtDotColor, 0.45)};color:${rtDotColor}"><span class="compound-dot" style="background-color:${rtDotColor}"></span>${lap.current_tyre_compound}</span>`;
+
     row.innerHTML = `
             <td class="text-center" style="padding: 8px 4px;">${lap.lap}</td>
             <td class="text-center" style="padding: 8px 4px;">${statusLabel}</td>
@@ -3120,7 +3103,7 @@ function renderTable() {
             <td class="text-center group-start" style="padding: 8px 4px;">${lap.s1}</td>
             <td class="text-center" style="padding: 8px 4px;">${lap.s2}</td>
             <td class="text-center group-end" style="padding: 8px 4px;">${lap.s3}</td>
-            <td class="text-center" style="padding: 8px 4px;">${lap.current_tyre_compound}</td>
+            <td class="text-center" style="padding: 8px 4px;">${rtCompoundBadge}</td>
             <td class="text-center" style="padding: 8px 4px;">${lap.fuel_kg.toFixed(2)}</td>
             <td class="text-center" style="padding: 8px 4px;">${fuelConsumed.toFixed(2)}</td>
             <td class="text-center group-start ${getWearClass(lap.tyre_wear.FL)}" style="padding: 8px 4px;">${lap.tyre_wear.FL.toFixed(2)}</td>
@@ -4041,3 +4024,61 @@ function renderPaceDeltaChart() {
     },
   });
 }
+
+// Global floating tooltip for .hint-icon elements (escapes overflow:hidden parents)
+(function initHintTooltip() {
+  let tipEl = null;
+  function ensureEl() {
+    if (!tipEl) {
+      tipEl = document.createElement("div");
+      tipEl.id = "global-hint-tooltip";
+      document.body.appendChild(tipEl);
+    }
+    return tipEl;
+  }
+  function position(target) {
+    const el = ensureEl();
+    const r = target.getBoundingClientRect();
+    el.style.left = "0px";
+    el.style.top = "0px";
+    const tw = el.offsetWidth;
+    const th = el.offsetHeight;
+    let left = r.left + r.width / 2 - tw / 2;
+    let top = r.top - th - 8;
+    if (top < 8) top = r.bottom + 8;
+    left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+    el.style.left = left + "px";
+    el.style.top = top + "px";
+  }
+  document.addEventListener("mouseover", (e) => {
+    const t = e.target.closest(".hint-icon");
+    if (!t) return;
+    const el = ensureEl();
+    el.textContent = t.getAttribute("data-tooltip") || "";
+    el.classList.add("show");
+    position(t);
+  });
+  document.addEventListener("mouseout", (e) => {
+    const t = e.target.closest(".hint-icon");
+    if (!t) return;
+    if (tipEl) tipEl.classList.remove("show");
+  });
+  window.addEventListener("scroll", () => { if (tipEl) tipEl.classList.remove("show"); }, true);
+})();
+
+// Sidebar collapse toggle
+(function () {
+  const apply = (collapsed) => {
+    document.getElementById("appShell")?.classList.toggle("sidebar-collapsed", collapsed);
+    try { localStorage.setItem("sidebarCollapsed", collapsed ? "1" : "0"); } catch (e) {}
+  };
+  document.addEventListener("DOMContentLoaded", () => {
+    const initial = (() => { try { return localStorage.getItem("sidebarCollapsed") === "1"; } catch (e) { return false; }})();
+    apply(initial);
+    document.getElementById("sidebarToggle")?.addEventListener("click", () => {
+      const collapsed = !document.getElementById("appShell")?.classList.contains("sidebar-collapsed");
+      apply(collapsed);
+    });
+    document.getElementById("sidebarExpand")?.addEventListener("click", () => apply(false));
+  });
+})();
