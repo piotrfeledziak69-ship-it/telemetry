@@ -71,22 +71,12 @@ const trackToFlag = {
   "abu dhabi": "🇦🇪",
 };
 
-// Initialize Supabase when the CDN client is available. Keep the UI usable if
-// GitHub Pages blocks or delays the database library.
+// Initialize Supabase
+// Replace these with your actual Supabase project credentials
 const SUPABASE_URL = "https://kbjjtiajugxvhoboqxwb.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtiamp0aWFqdWd4dmhvYm9xeHdiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwODE5NzUsImV4cCI6MjA5MTY1Nzk3NX0.VI2B5EcQXx_aaXyOB-eGXentTbMRG6obxu6IjUv7juI";
-let supabaseClient = null;
-
-function getSupabaseClient() {
-  if (supabaseClient) return supabaseClient;
-  if (!window.supabase || typeof window.supabase.createClient !== "function") {
-    console.warn("Database client is not available yet; running without saved sessions.");
-    return null;
-  }
-  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  return supabaseClient;
-}
+const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // F1 2026 Calendar Order for sorting
 const F1_2026_CALENDAR = [
@@ -151,11 +141,11 @@ window.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem("theme", isLight ? "light" : "dark");
   });
 
-  renderSeasonSelector();
-  initCollapsibleSections();
-
-  // Load saved data after the UI is interactive, so a slow DB never blocks clicks.
-  loadSavedSessions().then(() => autoLoadDriverTeams());
+  // Load sessions then attempt to auto-load driver teams for the selected season
+  loadSavedSessions().then(async () => {
+    await autoLoadDriverTeams();
+    initCollapsibleSections();
+  });
 
   const qualiGapToggleBtn = document.getElementById("qualiGapToggleBtn");
   if (qualiGapToggleBtn) {
@@ -846,14 +836,8 @@ function processTelemetryData(data) {
 }
 
 async function loadSavedSessions() {
-  const db = getSupabaseClient();
-  if (!db) {
-    renderSeasonSelector();
-    return;
-  }
-
   try {
-    const { data: sessions, error } = await db
+    const { data: sessions, error } = await supabaseClient
       .from("telemetry_sessions")
       .select("*")
       .order("season", { ascending: true })
@@ -902,8 +886,6 @@ async function loadSavedSessions() {
 
 async function saveSessions(sessions) {
   if (!sessions || sessions.length === 0) return;
-  const db = getSupabaseClient();
-  if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
 
   const dataToInsert = sessions.map((session) => ({
     driver_name: session.driver_name,
@@ -921,7 +903,7 @@ async function saveSessions(sessions) {
     race_story: session.race_story || null,
   }));
 
-  const { error } = await db
+  const { error } = await supabaseClient
     .from("telemetry_sessions")
     .insert(dataToInsert);
 
@@ -950,9 +932,7 @@ async function clearSessionStatus(statusType) {
   });
 
   try {
-    const db = getSupabaseClient();
-    if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
-    const { error } = await db
+    const { error } = await supabaseClient
       .from("telemetry_sessions")
       .update({ lap_history: currentData.lap_history })
       .eq("id", currentData.id);
@@ -977,9 +957,7 @@ async function deleteSession(id, event) {
     return;
 
   try {
-    const db = getSupabaseClient();
-    if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
-    const { error } = await db
+    const { error } = await supabaseClient
       .from("telemetry_sessions")
       .delete()
       .eq("id", id);
@@ -1667,6 +1645,7 @@ function renderQualiResults() {
     tableDiv.innerHTML = tableHtml;
     segmentsGridContainer.appendChild(tableDiv);
   });
+  enableTableRowReorder("#quali-results-container table");
 }
 
 function updateQualiGapButton() {
@@ -1687,6 +1666,54 @@ function renderSessionInfo() {
   const lastFuel = laps.length > 0 ? laps[laps.length - 1].fuel_kg : startFuel;
   const totalFuelConsumed = Math.max(0, startFuel - lastFuel);
   const avgFuelPerLap = laps.length > 0 ? totalFuelConsumed / laps.length : 0;
+
+  // Consistency rating: coefficient of variation across clean racing laps.
+  // Excludes lap 1, pit (in) laps, out-laps (lap after a pit), and any
+  // SC/VSC/Red Flag lap. Outliers slower than 107% of the fastest lap are
+  // trimmed before measuring spread so one lock-up doesn't dominate.
+  const pitLapNumbers = new Set(
+    laps
+      .filter((l) => Number(l.pit_status || 0) === 1)
+      .map((l) => Number(l.lap)),
+  );
+  const isCleanForConsistency = (l) => {
+    if (!l) return false;
+    const lapNum = Number(l.lap);
+    if (lapNum === 1) return false;
+    if (Number(l.pit_status || 0) === 1) return false;
+    if (Number(l.sc_status || 0) > 0) return false; // SC, VSC, Red
+    if (pitLapNumbers.has(lapNum - 1)) return false; // out-lap
+    return true;
+  };
+  const cleanLapSeconds = laps
+    .filter(isCleanForConsistency)
+    .map((l) => timeStringToSeconds(l.lap_time))
+    .filter((t) => typeof t === "number" && t > 0);
+  let consistencyHtml = "—";
+  let consistencyTitle =
+    "Needs ≥3 clean racing laps (excludes lap 1, in/out laps, SC, VSC, Red)";
+  if (cleanLapSeconds.length >= 3) {
+    const fast = Math.min(...cleanLapSeconds);
+    const trimmed = cleanLapSeconds.filter((t) => t <= fast * 1.07);
+    const sample = trimmed.length >= 3 ? trimmed : cleanLapSeconds;
+    const dropped = cleanLapSeconds.length - sample.length;
+    const mean = sample.reduce((a, b) => a + b, 0) / sample.length;
+    const variance =
+      sample.reduce((a, b) => a + (b - mean) * (b - mean), 0) / sample.length;
+    const stddev = Math.sqrt(variance);
+    const slow = Math.max(...sample);
+    const cv = stddev / mean;
+    const rating = Math.max(0, Math.min(100, 100 - cv * 2000));
+    const tier =
+      rating >= 92 ? "elite" : rating >= 82 ? "good" : rating >= 68 ? "mid" : "low";
+    consistencyHtml = `<span class="consistency-pill consistency-${tier}">${rating.toFixed(1)}<span class="consistency-unit">/100</span></span>`;
+    consistencyTitle =
+      `σ ${stddev.toFixed(3)}s · Mean ${mean.toFixed(3)}s · Spread ${(slow - fast).toFixed(3)}s · ${sample.length} laps used` +
+      (dropped > 0
+        ? ` (${dropped} outlier${dropped > 1 ? "s" : ""} >107% trimmed)`
+        : "") +
+      ` · excludes lap 1, in/out laps, SC/VSC/Red`;
+  }
 
   const statusCounts = laps.reduce(
     (counts, lap) => {
@@ -1757,6 +1784,10 @@ function renderSessionInfo() {
         <div class="info-item">
             <div class="info-label">Avg Fuel / Lap</div>
             <div class="info-value">${avgFuelPerLap.toFixed(3)} kg</div>
+        </div>
+        <div class="info-item" title="${consistencyTitle.replace(/"/g, "&quot;")}">
+            <div class="info-label" style="display:flex;align-items:center;gap:6px;">Consistency Rating<span class="hint-icon" data-tooltip="Rating = max(0, min(100, 100 − CV × 2000)) where CV = σ / mean on clean laps (excl. lap 1, in/out laps, SC/VSC/Red, outliers >107% trimmed)">?</span></div>
+            <div class="info-value">${consistencyHtml}</div>
         </div>
     `;
   document.getElementById("sessionInfo").innerHTML = html;
@@ -1889,8 +1920,21 @@ const pitLinesPlugin = {
     ctx.lineWidth = 1.4;
     ctx.fillStyle = color;
     ctx.font = "10px 'JetBrains Mono', monospace";
+    // Resolve a lap number to a pixel using the chart's actual label array.
+    // Chart.js category scales treat the first arg to getPixelForValue() as
+    // an index, so passing the lap number directly draws the line offset by
+    // (labels[0] - 0) ticks — usually 1, sometimes 2 if the telemetry skips a
+    // lap. Look up the label's real index to stay aligned with the data.
+    const labels = (chart.data && chart.data.labels) || [];
+    const resolveX = (lap) => {
+      if (labels.length) {
+        const idx = labels.findIndex((v) => Number(v) === Number(lap));
+        if (idx >= 0) return x.getPixelForValue(idx);
+      }
+      return x.getPixelForValue(lap);
+    };
     laps.forEach((lap) => {
-      const xPos = x.getPixelForValue(lap);
+      const xPos = resolveX(lap);
       if (xPos < chartArea.left || xPos > chartArea.right) return;
       ctx.beginPath();
       ctx.moveTo(xPos, chartArea.top);
@@ -2786,6 +2830,15 @@ function createChart(
       const laps = currentData.lap_history;
       const barWidth = x.width / laps.length;
 
+      // Chart.js category scales treat the first arg to getPixelForValue() as
+      // an index, so passing the actual lap number draws everything offset by
+      // (labels[0]) ticks. Convert lap → label index instead.
+      const chartLabels = (chart.data && chart.data.labels) || [];
+      const pixelForLap = (lapNum) => {
+        const idx = chartLabels.findIndex((v) => Number(v) === Number(lapNum));
+        return x.getPixelForValue(idx >= 0 ? idx : lapNum);
+      };
+
       ctx.save();
       // 1. Background overlays for SC / VSC / Red Flag — grouped per period
       // with half-lap precision at the start/end boundaries.
@@ -2801,8 +2854,8 @@ function createChart(
       };
       const periods = computeSafetyCarPeriods(laps);
       periods.forEach((p) => {
-        const xFirst = x.getPixelForValue(p.firstLap);
-        const xLast = x.getPixelForValue(p.lastLap);
+        const xFirst = pixelForLap(p.firstLap);
+        const xLast = pixelForLap(p.lastLap);
         const xLeft = xFirst + p.startOffset * barWidth;
         const xRight = xLast + p.endOffset * barWidth;
         const w = Math.max(2, xRight - xLeft);
@@ -2833,7 +2886,7 @@ function createChart(
 
       // 2. Vertical lines for pit stops (kept per-lap)
       laps.forEach((lap) => {
-        const xPos = x.getPixelForValue(lap.lap);
+        const xPos = pixelForLap(lap.lap);
         if (Number(lap.pit_status) === 1) {
           ctx.strokeStyle = "rgba(255, 255, 255, 0.6)";
           ctx.lineWidth = 2;
@@ -2954,7 +3007,11 @@ function createChart(
                   scales: { x },
                 } = chart;
 
-                const xPos = x.getPixelForValue(fastestLapLap);
+                const chartLabels = (chart.data && chart.data.labels) || [];
+                const flIdx = chartLabels.findIndex(
+                  (v) => Number(v) === Number(fastestLapLap),
+                );
+                const xPos = x.getPixelForValue(flIdx >= 0 ? flIdx : fastestLapLap);
                 ctx.save();
                 ctx.strokeStyle = "rgba(170, 88, 255, 0.95)";
                 ctx.fillStyle = "rgba(170, 88, 255, 0.95)";
@@ -3204,6 +3261,7 @@ function renderStandingsTable() {
   }
 
   container.innerHTML = html;
+  enableTableRowReorder("#standings-container .standings-table");
   // Render driver assignment UI below the standings
   try {
     renderDriverAssignments(driverNames);
@@ -3441,8 +3499,6 @@ function renderDriverAssignments(driverNames) {
 // ------------------ Supabase persistence helpers ------------------
 async function saveDriverTeamsToDB(obj) {
   if (!obj || Object.keys(obj).length === 0) return;
-  const db = getSupabaseClient();
-  if (!db) throw new Error("Database client is not available. Please refresh the page and try again.");
   const rows = Object.entries(obj).map(([driver, team]) => ({
     season: currentSeason,
     driver_name: driver,
@@ -3450,16 +3506,14 @@ async function saveDriverTeamsToDB(obj) {
   }));
 
   // Upsert rows using season + driver_name as unique constraint
-  const { error } = await db
+  const { error } = await supabaseClient
     .from("driver_teams")
     .upsert(rows, { onConflict: "season,driver_name" });
   if (error) throw error;
 }
 
 async function loadDriverTeamsFromDB(season) {
-  const db = getSupabaseClient();
-  if (!db) return {};
-  const { data, error } = await db
+  const { data, error } = await supabaseClient
     .from("driver_teams")
     .select("driver_name,team")
     .eq("season", season);
@@ -3506,12 +3560,25 @@ function secondsToTimeString(seconds) {
 // Collapsible sections helpers
 function initCollapsibleSections() {
   try {
+    const tabContainer = document.querySelector(".collapsible-tabs");
     const tabs = Array.from(document.querySelectorAll(".section-tab"));
     const sections = Array.from(
       document.querySelectorAll(".collapsible-section"),
     );
     const activeKey = "active_collapsible_section";
+    const orderKey = "collapsible_tab_order_v1";
     const storedActive = localStorage.getItem(activeKey);
+
+    // Restore saved tab order
+    try {
+      const savedOrder = JSON.parse(localStorage.getItem(orderKey) || "null");
+      if (Array.isArray(savedOrder) && tabContainer) {
+        savedOrder.forEach((target) => {
+          const tab = tabs.find((t) => t.dataset.target === target);
+          if (tab) tabContainer.appendChild(tab);
+        });
+      }
+    } catch (_) {}
 
     function activateSection(targetId) {
       sections.forEach((section) => {
@@ -3525,10 +3592,26 @@ function initCollapsibleSections() {
 
     tabs.forEach((tab) => {
       const targetId = tab.dataset.target;
-      tab.addEventListener("click", () => {
+      tab.addEventListener("click", (e) => {
+        // Ignore clicks that immediately follow a drag
+        if (tab.dataset.justDragged === "1") {
+          delete tab.dataset.justDragged;
+          return;
+        }
         activateSection(targetId);
       });
     });
+
+    if (tabContainer) {
+      enableDragReorder(tabContainer, ".section-tab", {
+        onReorder: () => {
+          const order = Array.from(
+            tabContainer.querySelectorAll(".section-tab"),
+          ).map((t) => t.dataset.target);
+          localStorage.setItem(orderKey, JSON.stringify(order));
+        },
+      });
+    }
 
     const defaultSection =
       storedActive && document.getElementById(storedActive)
@@ -3539,6 +3622,57 @@ function initCollapsibleSections() {
     console.warn("initCollapsibleSections failed", err);
   }
 }
+
+// Generic native HTML5 drag-and-drop reorder helper.
+// Marks all matching children as draggable, swaps DOM order on drop,
+// and calls opts.onReorder() afterwards. Safe to call repeatedly on the
+// same container (re-binds listeners cleanly via dataset flag).
+function enableDragReorder(container, itemSelector, opts = {}) {
+  if (!container) return;
+  const items = Array.from(container.querySelectorAll(itemSelector));
+  let dragging = null;
+  items.forEach((item) => {
+    if (item.dataset.dragBound === "1") return;
+    item.dataset.dragBound = "1";
+    item.setAttribute("draggable", "true");
+    item.addEventListener("dragstart", (e) => {
+      dragging = item;
+      item.classList.add("dragging");
+      try {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", "");
+      } catch (_) {}
+    });
+    item.addEventListener("dragend", () => {
+      if (dragging) dragging.dataset.justDragged = "1";
+      item.classList.remove("dragging");
+      dragging = null;
+      if (typeof opts.onReorder === "function") opts.onReorder();
+    });
+    item.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (!dragging || dragging === item) return;
+      const rect = item.getBoundingClientRect();
+      // Decide horizontal vs vertical by the longer axis of the item
+      const horizontal = rect.width >= rect.height;
+      const before = horizontal
+        ? e.clientX < rect.left + rect.width / 2
+        : e.clientY < rect.top + rect.height / 2;
+      if (before) item.parentNode.insertBefore(dragging, item);
+      else item.parentNode.insertBefore(dragging, item.nextSibling);
+    });
+  });
+}
+
+// Apply drag-reorder to a freshly rendered table body. Call after innerHTML
+// updates that rebuild the rows.
+function enableTableRowReorder(tableSelector) {
+  document.querySelectorAll(tableSelector + " tbody").forEach((tbody) => {
+    enableDragReorder(tbody, "tr");
+    tbody.classList.add("reorderable-rows");
+  });
+}
+
 
 // ============================================================
 //  Race Story (player-focused) — position, overtakes, stints, speed traps
