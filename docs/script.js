@@ -71,12 +71,21 @@ const trackToFlag = {
   "abu dhabi": "🇦🇪",
 };
 
-// Initialize Supabase
-// Replace these with your actual Supabase project credentials
+// Initialize Supabase lazily so GitHub Pages stays interactive even if the CDN is slow/blocked.
 const SUPABASE_URL = "https://kbjjtiajugxvhoboqxwb.supabase.co";
 const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtiamp0aWFqdWd4dmhvYm9xeHdiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYwODE5NzUsImV4cCI6MjA5MTY1Nzk3NX0.VI2B5EcQXx_aaXyOB-eGXentTbMRG6obxu6IjUv7juI";
-const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let supabaseClient = null;
+
+function getSupabaseClient() {
+  if (supabaseClient) return supabaseClient;
+  if (!window.supabase || typeof window.supabase.createClient !== "function") {
+    console.warn("Supabase library is not available yet; DB features are temporarily disabled.");
+    return null;
+  }
+  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return supabaseClient;
+}
 
 // F1 2026 Calendar Order for sorting
 const F1_2026_CALENDAR = [
@@ -141,10 +150,13 @@ window.addEventListener("DOMContentLoaded", () => {
     localStorage.setItem("theme", isLight ? "light" : "dark");
   });
 
-  // Load sessions then attempt to auto-load driver teams for the selected season
+  renderSeasonSelector();
+  initCollapsibleSections();
+
+  // Load sessions then attempt to auto-load driver teams for the selected season.
+  // This runs after the UI is wired so slow/failed DB startup cannot freeze clicks.
   loadSavedSessions().then(async () => {
     await autoLoadDriverTeams();
-    initCollapsibleSections();
   });
 
   const qualiGapToggleBtn = document.getElementById("qualiGapToggleBtn");
