@@ -22,6 +22,7 @@ const OPTIONS: { view: string; label: string; icon: string; desc: string }[] = [
   { view: "quali-results", label: "Qualifying",     icon: "⏱️", desc: "Q1–Q3 / shootout times" },
   { view: "assignments", label: "Teams",            icon: "🏎️", desc: "Driver / constructor pairings" },
   { view: "race-story",  label: "Race Story",       icon: "🎬", desc: "Position changes, stints, classification" },
+  { view: "compare",     label: "Compare Lap Times", icon: "🆚", desc: "Compare your lap times against any driver" },
   { view: "graphs",      label: "Graphs",           icon: "📊", desc: "Lap times, fuel, ERS, tyre wear + faults" },
   { view: "data",        label: "Laps",             icon: "📋", desc: "Per-lap table and stint summary" },
   { view: "practice",    label: "Practice",         icon: "🏁", desc: "Free practice fuel calculator" },
