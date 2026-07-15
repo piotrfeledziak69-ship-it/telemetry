@@ -4,6 +4,65 @@ let currentSeason = 1;
 let qualiGapMode = "leader";
 const charts = {};
 
+// ---------------------------------------------------------------
+// Embed / deep-link bootstrap
+// The React shell iframes this app with ?season=&track=&view=
+// to render a single focused view (standings, race-story, etc).
+// ---------------------------------------------------------------
+const EMBED_QP = (() => {
+  try { return new URLSearchParams(location.search); } catch { return new URLSearchParams(); }
+})();
+const EMBED_VIEW   = EMBED_QP.get("view");    // e.g. "race-story"
+const EMBED_SEASON = EMBED_QP.get("season");  // "1" | "2" ...
+const EMBED_TRACK  = EMBED_QP.get("track");   // track_name
+const EMBED_CAT    = EMBED_QP.get("cat");     // optional category filter
+if (EMBED_VIEW) {
+  const cls = EMBED_VIEW === "upload" ? "embed-upload" : "embed-mode";
+  document.documentElement.classList.add(cls);
+  document.body && document.body.classList.add(cls);
+  document.addEventListener("DOMContentLoaded", () => document.body.classList.add(cls));
+}
+
+function _embedApplyView() {
+  if (!EMBED_VIEW) return;
+  const targetId = "section-" + EMBED_VIEW;
+  document.querySelectorAll(".collapsible-section").forEach((s) => {
+    s.classList.toggle("active", s.id === targetId);
+    if (s.id !== targetId) s.style.display = "none";
+  });
+  document.querySelectorAll(".section-tab").forEach((t) => {
+    t.classList.toggle("active", t.dataset.target === targetId);
+  });
+}
+function _embedNotifyReady(status) {
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: "f1-embed-ready", status: status || "ok", view: EMBED_VIEW }, "*");
+    }
+  } catch (e) { /* ignore */ }
+}
+function _embedSelectSession() {
+  if (!EMBED_TRACK) { _embedNotifyReady("no-track"); return; }
+  const wanted = String(EMBED_TRACK).toLowerCase();
+  const wantedCat = EMBED_CAT ? String(EMBED_CAT).toLowerCase() : null;
+  const match = allSessions.find(
+    (s) =>
+      s.season === Number(EMBED_SEASON || currentSeason) &&
+      (s.track_name || "").toLowerCase() === wanted &&
+      (!wantedCat || (s.category || "").toLowerCase() === wantedCat),
+  );
+  if (match) {
+    currentData = match;
+    try { renderContent(); } catch (e) { console.warn(e); }
+    _embedNotifyReady("ok");
+  } else {
+    _embedNotifyReady("no-match");
+  }
+}
+if (EMBED_SEASON) currentSeason = Number(EMBED_SEASON) || 1;
+
+
+
 // Global state for Practice Fuel Calculator
 let selectedPracticeLaps = new Set();
 let practiceFuelMap = new Map();
@@ -125,6 +184,37 @@ const F1_2026_CALENDAR = [
   "abu_dhabi",
 ];
 
+// 26 tracks available for personal notes (F1 game roster incl. legacy tracks)
+const NOTES_TRACKS = [
+  { key: "melbourne", label: "Melbourne", flag: "🇦🇺" },
+  { key: "shanghai", label: "Shanghai", flag: "🇨🇳" },
+  { key: "suzuka", label: "Suzuka", flag: "🇯🇵" },
+  { key: "sakhir", label: "Bahrain", flag: "🇧🇭" },
+  { key: "jeddah", label: "Jeddah", flag: "🇸🇦" },
+  { key: "miami", label: "Miami", flag: "🇺🇸" },
+  { key: "imola", label: "Imola", flag: "🇮🇹" },
+  { key: "monaco", label: "Monaco", flag: "🇲🇨" },
+  { key: "montreal", label: "Montreal", flag: "🇨🇦" },
+  { key: "catalunya", label: "Catalunya", flag: "🇪🇸" },
+  { key: "austria", label: "Red Bull Ring", flag: "🇦🇹" },
+  { key: "silverstone", label: "Silverstone", flag: "🇬🇧" },
+  { key: "spa", label: "Spa", flag: "🇧🇪" },
+  { key: "hungaroring", label: "Hungaroring", flag: "🇭🇺" },
+  { key: "zandvoort", label: "Zandvoort", flag: "🇳🇱" },
+  { key: "monza", label: "Monza", flag: "🇮🇹" },
+  { key: "madring", label: "Madring", flag: "🇪🇸" },
+  { key: "baku", label: "Baku", flag: "🇦🇿" },
+  { key: "singapore", label: "Singapore", flag: "🇸🇬" },
+  { key: "texas", label: "COTA", flag: "🇺🇸" },
+  { key: "mexico", label: "Mexico City", flag: "🇲🇽" },
+  { key: "brazil", label: "Interlagos", flag: "🇧🇷" },
+  { key: "las_vegas", label: "Las Vegas", flag: "🇺🇸" },
+  { key: "losail", label: "Losail", flag: "🇶🇦" },
+  { key: "abu_dhabi", label: "Yas Marina", flag: "🇦🇪" },
+  { key: "portimao", label: "Portimão", flag: "🇵🇹" },
+];
+
+
 // Suggested team list for driver assignment (datalist/autofill)
 const DRIVER_TEAM_SUGGESTIONS = [
   "My Team",
@@ -162,11 +252,14 @@ window.addEventListener("DOMContentLoaded", () => {
 
   renderSeasonSelector();
   initCollapsibleSections();
+  _embedApplyView();
 
   // Load sessions then attempt to auto-load driver teams for the selected season.
   // This runs after the UI is wired so slow/failed DB startup cannot freeze clicks.
   loadDatabaseBackedData();
-  window.addEventListener("supabase-ready", () => loadDatabaseBackedData(), {
+  loadTrackNotes();
+  window.addEventListener("supabase-ready", () => { loadDatabaseBackedData(); loadTrackNotes(); }, {
+
     once: true,
   });
 
@@ -512,7 +605,7 @@ function buildRaceStory(rootData, playerName, playerTeam, classification_data) {
   if (!playerPos && !classification_data?.length) return null;
 
   const position_history = (playerPos?.["driver-position-history"] || [])
-    .filter((p) => p["lap-number"] >= 1)
+    .filter((p) => p["lap-number"] >= 0)
     .map((p) => ({ lap: p["lap-number"], position: p.position }));
 
   // Podium = top 3 by final-classification.position
@@ -535,7 +628,7 @@ function buildRaceStory(rootData, playerName, playerTeam, classification_data) {
       team: entry.team || "",
       final: entry["final-classification"]?.position,
       history: (ph["driver-position-history"] || [])
-        .filter((p) => p["lap-number"] >= 1)
+        .filter((p) => p["lap-number"] >= 0)
         .map((p) => ({ lap: p["lap-number"], position: p.position })),
     });
   });
@@ -587,6 +680,121 @@ function buildRaceStory(rootData, playerName, playerTeam, classification_data) {
       kmph: Math.round(s["speed-trap-record-kmph"] || 0),
     }));
 
+  // Fastest lap of the race (overall, across all drivers).
+  // Guard against corrupted / stale telemetry entries (e.g. a lapped driver
+  // showing a phantom 25s lap). Collect plausible laps, derive a race-wide
+  // median, then reject anything unrealistically quick, with missing/zero
+  // sectors, mismatched sector sum, or beyond the driver's completed laps.
+  const flCandidates = [];
+  (classification_data || []).forEach((e) => {
+    const name = String(e["driver-name"] || "").toUpperCase();
+    const team = e.team || "";
+    const laps = e["lap-time-history"]?.["lap-history-data"] || [];
+    const fc = e["final-classification"] || {};
+    const completedLaps = fc["num-laps"] || laps.length;
+    const driverBestMs = fc["best-lap-time-ms"] || 0;
+    laps.forEach((l, i) => {
+      const lapNum = i + 1;
+      if (lapNum > completedLaps) return; // stale rows past retirement
+      const ms = l["lap-time-in-ms"] || 0;
+      if (ms <= 0) return;
+      const s1 = l["sector-1-time-in-ms"] || 0;
+      const s2 = l["sector-2-time-in-ms"] || 0;
+      const s3 = l["sector-3-time-in-ms"] || 0;
+      if (s1 <= 0 || s2 <= 0 || s3 <= 0) return;
+      if (Math.abs(s1 + s2 + s3 - ms) > 500) return;
+      const flags = l["lap-valid-bit-flags"];
+      const valid = flags === undefined || (flags & 1);
+      if (!valid) return;
+      // Reject laps clearly faster than driver's own reported best
+      if (driverBestMs > 0 && ms < driverBestMs - 50) return;
+      flCandidates.push({ name, team, lap: lapNum, ms });
+    });
+  });
+  let fastest_lap = null;
+  if (flCandidates.length) {
+    const sortedMs = flCandidates.map((c) => c.ms).sort((a, b) => a - b);
+    const median = sortedMs[Math.floor(sortedMs.length / 2)];
+    // Reject anything faster than 75% of median (impossible pace = corrupt)
+    const floor = median * 0.75;
+    const pool = flCandidates.filter((c) => c.ms >= floor);
+    const finalPool = pool.length ? pool : flCandidates;
+    finalPool.forEach((c) => {
+      if (!fastest_lap || c.ms < fastest_lap.time_ms) {
+        const totalSec = c.ms / 1000;
+        const m = Math.floor(totalSec / 60);
+        const s = (totalSec - m * 60).toFixed(3).padStart(6, "0");
+        fastest_lap = { name: c.name, team: c.team, lap: c.lap, time_ms: c.ms, lap_time_str: `${m}:${s}` };
+      }
+    });
+  }
+
+  // Driver of the Day — pulled from common field names if game records it
+  let driver_of_the_day = null;
+  (classification_data || []).forEach((e) => {
+    const fc = e["final-classification"] || {};
+    if (fc["driver-of-the-day"] || fc["is-driver-of-the-day"] || e["driver-of-the-day"]) {
+      driver_of_the_day = String(e["driver-name"] || "").toUpperCase();
+    }
+  });
+  const rootDOTD = rootData?.["driver-of-the-day"] || rootData?.["records"]?.["driver-of-the-day"];
+  if (!driver_of_the_day && rootDOTD) driver_of_the_day = String(rootDOTD).toUpperCase();
+
+  // Final classification (every driver) with total time, best lap, status.
+  // Include DNFs (no position / non-finished status / short on laps) with is_dnf flag.
+  const rawEntries = (classification_data || []).map((e) => {
+    const fc = e["final-classification"] || {};
+    return {
+      position: fc.position || null,
+      name: String(e["driver-name"] || "").toUpperCase(),
+      team: e.team || "",
+      laps: fc["num-laps"] || 0,
+      time_s: fc["total-race-time"] || 0,
+      time_str: fc["total-race-time-str"] || "",
+      best_lap_ms: fc["best-lap-time-ms"] || 0,
+      best_lap_str: fc["best-lap-time-str"] || "",
+      status: fc["result-status"] || "",
+      points: fc.points || 0,
+      pits: fc["num-pit-stops"] || 0,
+    };
+  }).filter((e) => e.name);
+  const maxLaps = rawEntries.reduce((m, e) => Math.max(m, e.laps || 0), 0);
+  const decorated = rawEntries.map((e) => {
+    const statusStr = String(e.status || "").toUpperCase();
+    const statusDnf = statusStr && !/FINISHED|ACTIVE/.test(statusStr);
+    const missingPos = !e.position || e.position <= 0;
+    const shortLaps = maxLaps >= 5 && e.laps > 0 && e.laps < maxLaps - 2 && !e.time_s;
+    const is_dnf = statusDnf || (missingPos && (e.laps === 0 || !e.time_s)) || shortLaps;
+    return { ...e, is_dnf };
+  });
+  const finishers = decorated
+    .filter((e) => e.position && !e.is_dnf)
+    .sort((a, b) => a.position - b.position);
+  const dnfs = decorated
+    .filter((e) => e.is_dnf || !e.position)
+    .sort((a, b) => (b.laps || 0) - (a.laps || 0));
+  let nextPos = (finishers[finishers.length - 1]?.position || finishers.length) + 1;
+  dnfs.forEach((e) => {
+    if (!e.position || e.position <= 0) e.position = nextPos++;
+    e.is_dnf = true;
+    if (!e.status) e.status = "DNF";
+  });
+  const classification = [...finishers, ...dnfs];
+
+  // Per-driver lap times for the Compare tab
+  const driver_lap_times = (classification_data || []).map((e) => ({
+    name: String(e["driver-name"] || "").toUpperCase(),
+    team: e.team || "",
+    laps: (e["lap-time-history"]?.["lap-history-data"] || []).map((l, i) => ({
+      lap: i + 1,
+      ms: l["lap-time-in-ms"] || 0,
+      s1: l["sector-1-time-in-ms"] || 0,
+      s2: l["sector-2-time-in-ms"] || 0,
+      s3: l["sector-3-time-in-ms"] || 0,
+      valid: l["lap-valid-bit-flags"] === undefined || !!(l["lap-valid-bit-flags"] & 1),
+    })),
+  })).filter((d) => d.name && d.laps.length);
+
   return {
     player_name: playerName,
     player_team: playerTeam,
@@ -596,6 +804,10 @@ function buildRaceStory(rootData, playerName, playerTeam, classification_data) {
     overtakes_suffered,
     pace_delta,
     speed_traps,
+    fastest_lap,
+    driver_of_the_day,
+    classification,
+    driver_lap_times,
   };
 }
 
@@ -834,6 +1046,18 @@ function processTelemetryData(data) {
             ers_remaining_j: Number(
               (status["ers-store-energy"] || 0).toFixed(0),
             ),
+            damage: {
+              fl_wing: damage["front-left-wing-damage"] || 0,
+              fr_wing: damage["front-right-wing-damage"] || 0,
+              rear_wing: damage["rear-wing-damage"] || 0,
+              floor: damage["floor-damage"] || 0,
+              diffuser: damage["diffuser-damage"] || 0,
+              sidepod: damage["sidepod-damage"] || 0,
+              gearbox: damage["gear-box-damage"] || 0,
+              engine: damage["engine-damage"] || 0,
+              drs_fault: !!damage["drs-fault"],
+              ers_fault: !!damage["ers-fault"],
+            },
           });
         });
 
@@ -930,12 +1154,47 @@ async function saveSessions(sessions) {
     race_story: session.race_story || null,
   }));
 
+  // Overwrite: delete any existing row matching driver+track+season+category, then insert
+  for (const row of dataToInsert) {
+    try {
+      await db.from("telemetry_sessions").delete().match({
+        driver_name: row.driver_name,
+        track_name: row.track_name,
+        season: row.season,
+        category: row.category,
+      });
+    } catch (err) {
+      console.warn("Pre-delete for overwrite failed (continuing):", err);
+    }
+  }
+
   const { error } = await db
     .from("telemetry_sessions")
     .insert(dataToInsert);
 
   if (error) throw error;
   await loadSavedSessions();
+}
+
+// Compute Win / Pole / Fastest-lap / Grand-slam flags for a saved session
+function getSessionBadges(session) {
+  const cat = (session.category || "").toLowerCase();
+  const isRaceLike = cat === "race" || cat === "sprint";
+  if (!isRaceLike) return { win: false, pole: false, fl: false, grandSlam: false };
+  const finish = Number(session.finishing_position ?? session.finishing_pos);
+  const start = Number(session.starting_position ?? session.starting_pos);
+  const rs = session.race_story || {};
+  const playerName = (rs.player_name || session.driver_name || "").toUpperCase();
+  const win = finish === 1;
+  const pole = start === 1;
+  const fl =
+    !!(rs.fastest_lap && (rs.fastest_lap.name || "").toUpperCase() === playerName);
+  const ledEveryLap =
+    Array.isArray(rs.position_history) &&
+    rs.position_history.length > 1 &&
+    rs.position_history.filter((p) => p.lap >= 1).every((p) => p.position === 1);
+  const grandSlam = cat === "race" && win && pole && fl && ledEveryLap;
+  return { win, pole, fl, grandSlam };
 }
 
 async function clearSessionStatus(statusType) {
@@ -1087,86 +1346,59 @@ function renderSavedSessions(sessions) {
     .slice()
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-  // Group by date (YYYY-MM-DD) so we can render date headers
-  const groupsByDate = new Map();
-  displaySessions.forEach((s) => {
-    const d = new Date(s.created_at);
-    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
-    if (!groupsByDate.has(key)) groupsByDate.set(key, { date: d, items: [] });
-    groupsByDate.get(key).items.push(s);
-  });
-
-  const fmtTime = (d) =>
-    `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  const fmtDateHeader = (d) =>
-    d
-      .toLocaleDateString(undefined, {
-        weekday: "short",
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-      })
-      .toUpperCase();
-
   const catLabel = (c) => {
     if (!c) return "";
     if (c === "Sprint Shootout") return "SHOOTOUT";
     return c.toUpperCase();
   };
 
-  for (const { date, items } of groupsByDate.values()) {
-    const header = document.createElement("div");
-    header.className = "session-date-header";
-    header.textContent = fmtDateHeader(date);
-    grid.appendChild(header);
+  displaySessions.forEach((session) => {
+    const trackKey = (session.track_name || "").toLowerCase();
+    const flag = trackToFlag[trackKey] || "🏁";
+    const weatherIcon = determineWeatherIcon(session);
+    const badges = getSessionBadges(session);
+    const badgeHtml = [
+      badges.grandSlam ? '<span class="result-tag mini tag-gs" title="Grand Slam">GS</span>' : "",
+      badges.win ? '<span class="result-tag mini tag-w" title="Win">W</span>' : "",
+      badges.pole ? '<span class="result-tag mini tag-p" title="Pole">P</span>' : "",
+      badges.fl ? '<span class="result-tag mini tag-fl" title="Fastest Lap">FL</span>' : "",
+    ].join("");
 
-    items.forEach((session) => {
-      const trackKey = (session.track_name || "").toLowerCase();
-      const flag = trackToFlag[trackKey] || "🏁";
-      const weatherIcon = determineWeatherIcon(session);
-      const isWin =
-        session.category === "Race" &&
-        Number(session.finishing_position) === 1;
-      const winMarker = isWin
-        ? '<span class="result-tag win-marker mini">WIN</span>'
-        : "";
-      const t = new Date(session.created_at);
-
-      const card = document.createElement("div");
-      card.className = `session-row ${currentData && currentData.id === session.id ? "active" : ""}`;
-      card.innerHTML = `
-        <button class="delete-btn" title="Delete">🗑️</button>
-        <div class="sr-left">
-          <div class="sr-track">
-            <span class="flag-icon">${flag}</span>
-            <span class="sr-track-name">${session.track_name || "Unknown"}</span>
-          </div>
-          <div class="sr-time">${fmtTime(t)}</div>
+    const card = document.createElement("div");
+    card.className = `session-row ${currentData && currentData.id === session.id ? "active" : ""}`;
+    card.innerHTML = `
+      <button class="delete-btn" title="Delete">🗑️</button>
+      <div class="sr-left">
+        <div class="sr-track">
+          <span class="flag-icon">${flag}</span>
+          <span class="sr-track-name">${session.track_name || "Unknown"}</span>
         </div>
-        <div class="sr-right">
-          <span class="sr-cat">🏁 ${catLabel(session.category)}</span>
-          <span class="sr-weather">${weatherIcon}</span>
-          ${winMarker}
-        </div>
-      `;
+      </div>
+      <div class="sr-right">
+        <span class="sr-cat">🏁 ${catLabel(session.category)}</span>
+        <span class="sr-weather">${weatherIcon}</span>
+        ${badgeHtml}
+      </div>
+    `;
 
-      card.querySelector(".delete-btn").onclick = (e) =>
-        deleteSession(session.id, e);
+    card.querySelector(".delete-btn").onclick = (e) =>
+      deleteSession(session.id, e);
 
-      card.addEventListener("click", (e) => {
-        if (e.target.closest(".delete-btn")) return;
-        currentData = session;
-        renderContent();
-        renderSavedSessions(allSessions);
-      });
-
-      grid.appendChild(card);
+    card.addEventListener("click", (e) => {
+      if (e.target.closest(".delete-btn")) return;
+      currentData = session;
+      renderContent();
+      renderSavedSessions(allSessions);
     });
-  }
+
+    grid.appendChild(card);
+  });
+
 
   renderStandingsTable();
 
   container.style.display = sessions.length ? "block" : "none";
+  if (EMBED_VIEW && !currentData) _embedSelectSession();
 }
 
 function determineWeatherIcon(session) {
@@ -1241,6 +1473,7 @@ function renderContent() {
   renderQualiResults();
   renderPracticeSection();
   renderRaceStory();
+  renderCompareTab();
   document.getElementById("content").style.display = "block";
 
 }
@@ -1684,10 +1917,10 @@ function renderSessionInfo() {
   const totalFuelConsumed = Math.max(0, startFuel - lastFuel);
   const avgFuelPerLap = laps.length > 0 ? totalFuelConsumed / laps.length : 0;
 
-  // Consistency rating: coefficient of variation across clean racing laps.
-  // Excludes lap 1, pit (in) laps, out-laps (lap after a pit), and any
-  // SC/VSC/Red Flag lap. Outliers slower than 107% of the fastest lap are
-  // trimmed before measuring spread so one lock-up doesn't dominate.
+  // Consistency rating: STINT-SEPARATED weighted CV across clean racing laps.
+  // Each stint is measured on its own (accounts for fuel burn, tyre compound,
+  // and track evolution), then combined by clean-lap weight into a Total CV.
+  // Rating = max(0, min(100, 100 − Total CV × 2500)).
   const pitLapNumbers = new Set(
     laps
       .filter((l) => Number(l.pit_status || 0) === 1)
@@ -1702,34 +1935,79 @@ function renderSessionInfo() {
     if (pitLapNumbers.has(lapNum - 1)) return false; // out-lap
     return true;
   };
-  const cleanLapSeconds = laps
-    .filter(isCleanForConsistency)
-    .map((l) => timeStringToSeconds(l.lap_time))
-    .filter((t) => typeof t === "number" && t > 0);
-  let consistencyHtml = "—";
-  let consistencyTitle =
-    "Needs ≥3 clean racing laps (excludes lap 1, in/out laps, SC, VSC, Red)";
-  if (cleanLapSeconds.length >= 3) {
-    const fast = Math.min(...cleanLapSeconds);
-    const trimmed = cleanLapSeconds.filter((t) => t <= fast * 1.07);
-    const sample = trimmed.length >= 3 ? trimmed : cleanLapSeconds;
-    const dropped = cleanLapSeconds.length - sample.length;
+
+  // Build stint lap groups. Prefer explicit stint boundaries when available,
+  // otherwise segment on pit laps / compound changes.
+  const stintGroups = [];
+  if (Array.isArray(currentData.stints) && currentData.stints.length > 0) {
+    currentData.stints.forEach((s) => {
+      const sl = Number(s["start-lap"]);
+      const el = Number(s["end-lap"]);
+      const g = laps.filter((l) => {
+        const n = Number(l.lap);
+        return n >= sl && n <= el;
+      });
+      if (g.length) stintGroups.push(g);
+    });
+  } else if (laps.length) {
+    let cur = [];
+    let curCompound = laps[0].current_tyre_compound;
+    laps.forEach((l) => {
+      const comp = l.current_tyre_compound;
+      if (cur.length && comp !== curCompound) {
+        stintGroups.push(cur);
+        cur = [];
+        curCompound = comp;
+      }
+      cur.push(l);
+      if (Number(l.pit_status || 0) === 1) {
+        stintGroups.push(cur);
+        cur = [];
+        curCompound = null;
+      }
+    });
+    if (cur.length) stintGroups.push(cur);
+  }
+
+  // Per-stint CV, with >107% of stint median trimmed as outliers.
+  const stintStats = [];
+  let totalCleanLaps = 0;
+  stintGroups.forEach((group) => {
+    const times = group
+      .filter(isCleanForConsistency)
+      .map((l) => timeStringToSeconds(l.lap_time))
+      .filter((t) => typeof t === "number" && t > 0);
+    if (times.length < 3) return;
+    const sorted = [...times].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const trimmed = times.filter((t) => t <= median * 1.07);
+    const sample = trimmed.length >= 3 ? trimmed : times;
     const mean = sample.reduce((a, b) => a + b, 0) / sample.length;
     const variance =
       sample.reduce((a, b) => a + (b - mean) * (b - mean), 0) / sample.length;
     const stddev = Math.sqrt(variance);
-    const slow = Math.max(...sample);
-    const cv = stddev / mean;
-    const rating = Math.max(0, Math.min(100, 100 - cv * 2000));
+    const cv = mean > 0 ? stddev / mean : 0;
+    stintStats.push({ cv, cleanLaps: sample.length });
+    totalCleanLaps += sample.length;
+  });
+
+  let consistencyHtml = "—";
+  let consistencyTitle =
+    "Needs ≥3 clean racing laps in at least one stint (excludes lap 1, in/out laps, SC/VSC/Red, >107% of stint median)";
+  if (totalCleanLaps >= 3 && stintStats.length > 0) {
+    const totalCV = stintStats.reduce(
+      (acc, s) => acc + s.cv * (s.cleanLaps / totalCleanLaps),
+      0,
+    );
+    const rating = Math.max(0, Math.min(100, 100 - totalCV * 2500));
     const tier =
       rating >= 92 ? "elite" : rating >= 82 ? "good" : rating >= 68 ? "mid" : "low";
     consistencyHtml = `<span class="consistency-pill consistency-${tier}">${rating.toFixed(1)}<span class="consistency-unit">/100</span></span>`;
+    const perStint = stintStats
+      .map((s, i) => `S${i + 1}: CV ${(s.cv * 100).toFixed(2)}% (${s.cleanLaps} laps)`)
+      .join(" · ");
     consistencyTitle =
-      `σ ${stddev.toFixed(3)}s · Mean ${mean.toFixed(3)}s · Spread ${(slow - fast).toFixed(3)}s · ${sample.length} laps used` +
-      (dropped > 0
-        ? ` (${dropped} outlier${dropped > 1 ? "s" : ""} >107% trimmed)`
-        : "") +
-      ` · excludes lap 1, in/out laps, SC/VSC/Red`;
+      `Weighted Total CV ${(totalCV * 100).toFixed(3)}% across ${stintStats.length} stint${stintStats.length > 1 ? "s" : ""} · ${totalCleanLaps} clean laps · ${perStint}`;
   }
 
   const statusCounts = laps.reduce(
@@ -1803,7 +2081,7 @@ function renderSessionInfo() {
             <div class="info-value">${avgFuelPerLap.toFixed(3)} kg</div>
         </div>
         <div class="info-item" title="${consistencyTitle.replace(/"/g, "&quot;")}">
-            <div class="info-label" style="display:flex;align-items:center;gap:6px;">Consistency Rating<span class="hint-icon" data-tooltip="Rating = max(0, min(100, 100 − CV × 2000)) where CV = σ / mean on clean laps (excl. lap 1, in/out laps, SC/VSC/Red, outliers >107% trimmed)">?</span></div>
+            <div class="info-label" style="display:flex;align-items:center;gap:6px;">Consistency Rating<span class="hint-icon" data-tooltip="Stint-Separated Weighted CV. For each stint: filter clean laps (excl. lap 1, in/out laps, SC/VSC/Red, >107% of stint median), compute Stint CV = σ/mean. Total CV = Σ [Stint CV × (stint clean laps / total clean laps)]. Rating = max(0, min(100, 100 − Total CV × 2500)).">?</span></div>
             <div class="info-value">${consistencyHtml}</div>
         </div>
     `;
@@ -2915,6 +3193,48 @@ function createChart(
           ctx.setLineDash([]); // Reset for other drawings
         }
       });
+
+      // 3. Fault overlays (ERS / DRS / engine / gearbox / aero)
+      const FAULT_STYLES = {
+        ers:     { color: "#ffb020", label: "ERS" },
+        drs:     { color: "#5ad1ff", label: "DRS" },
+        engine:  { color: "#ff5252", label: "ENG" },
+        gearbox: { color: "#c084fc", label: "GBX" },
+        aero:    { color: "#9aff9a", label: "AERO" },
+      };
+      let prevDmg = null;
+      laps.forEach((lap) => {
+        if (!lap || !lap.damage) return;
+        const d = lap.damage;
+        const faults = [];
+        if (d.ers_fault) faults.push("ers");
+        if (d.drs_fault) faults.push("drs");
+        if (prevDmg) {
+          if ((d.engine || 0) - (prevDmg.engine || 0) >= 5) faults.push("engine");
+          if ((d.gearbox || 0) - (prevDmg.gearbox || 0) >= 5) faults.push("gearbox");
+          const aeroNow  = (d.fl_wing||0)+(d.fr_wing||0)+(d.rear_wing||0)+(d.floor||0)+(d.diffuser||0)+(d.sidepod||0);
+          const aeroPrev = (prevDmg.fl_wing||0)+(prevDmg.fr_wing||0)+(prevDmg.rear_wing||0)+(prevDmg.floor||0)+(prevDmg.diffuser||0)+(prevDmg.sidepod||0);
+          if (aeroNow - aeroPrev >= 10) faults.push("aero");
+        }
+        prevDmg = d;
+        if (!faults.length) return;
+        const xPos = pixelForLap(lap.lap);
+        faults.forEach((f, i) => {
+          const style = FAULT_STYLES[f];
+          ctx.strokeStyle = style.color;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([2, 4]);
+          ctx.beginPath();
+          ctx.moveTo(xPos + i * 2, chartArea.top);
+          ctx.lineTo(xPos + i * 2, chartArea.bottom);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = style.color;
+          ctx.font = "bold 9px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText(style.label, xPos, chartArea.top + 14 + i * 11);
+        });
+      });
       ctx.restore();
     },
   };
@@ -3197,17 +3517,32 @@ function renderStandingsTable() {
     )
     .sort(sortSessionsByCalendar);
 
+  // Build per-session DNF sets from race_story.classification
+  const sessionDnfSets = {};
+  scoringSessions.forEach((s) => {
+    const key = s.id || s.created_at;
+    const set = new Set();
+    (s.race_story?.classification || []).forEach((e) => {
+      const isDNF = e.is_dnf || (e.status && !/FINISHED/i.test(e.status));
+      if (isDNF && e.name) set.add(String(e.name).toUpperCase());
+    });
+    sessionDnfSets[key] = set;
+  });
+
   scoringSessions.forEach((session) => {
     if (!session.results) return;
+    const sKey = session.id || session.created_at;
+    const dnfSet = sessionDnfSets[sKey] || new Set();
     session.results.forEach((res) => {
       const driverName = res.name;
-      driversMap[driverName].positions[session.id || session.created_at] =
-        res.position;
+      const isDNF = dnfSet.has(String(driverName || "").toUpperCase());
+      driversMap[driverName].positions[sKey] = isDNF ? "DNF" : res.position;
 
       let pts = 0;
       const cat = (session.category || "").toLowerCase();
       const pos = parseInt(res.position);
-      if (cat === "race")
+      if (isDNF) pts = 0;
+      else if (cat === "race")
         pts = [0, 25, 18, 15, 12, 10, 8, 6, 4, 2, 1][pos] || 0;
       else if (cat === "sprint") pts = [0, 8, 7, 6, 5, 4, 3, 2, 1][pos] || 0;
       driversMap[driverName].points += pts;
@@ -3220,37 +3555,52 @@ function renderStandingsTable() {
 
   const teamsAssigned = getDriverTeams(); // This is used for constructor standings
 
-  let html = `<div class="table-responsive"><table class="table table-sm table-dark table-striped standings-table" style="font-size: 0.7rem;"><thead><tr><th style="padding: 12px 4px; width: 40px;" class="text-center">#</th><th style="padding: 12px 4px; width: 180px;" class="text-start">Driver</th>`;
+  let html = `<div class="table-responsive standings-wrap"><table class="standings-table standings-v2"><thead><tr><th class="col-rank">#</th><th class="col-driver">Driver</th>`;
 
   scoringSessions.forEach((s, i) => {
     const flag = getFlagHtml(s, i + 1);
     const typeLabel = (s.category || "").toLowerCase() === "sprint" ? "S" : "R";
-    html += `<th title="${s.track_name} - ${s.category}" class="text-center" style="padding: 12px 2px;">${flag}<br><small style="font-size: 0.6em; opacity: 0.8;">${typeLabel}</small></th>`;
+    const code = (s.track_code || s.track_name || "").toString().slice(0, 3).toUpperCase();
+    html += `<th title="${s.track_name} - ${s.category}" class="col-race"><div class="race-head"><span class="race-flag">${flag}</span><span class="race-code">${code}</span><span class="race-type race-type-${typeLabel.toLowerCase()}">${typeLabel}</span></div></th>`;
   });
 
-  html += `<th class="text-end" style="padding: 12px 4px;">Pts</th><th class="text-end" style="padding: 12px 4px;">Gap</th></tr></thead><tbody>`;
+  html += `<th class="col-pts">Pts</th><th class="col-gap">Gap</th></tr></thead><tbody>`;
 
   driverNames.forEach((name, idx) => {
     const d = driversMap[name];
     const team = teamsAssigned[name] || "Unassigned";
     const teamColor = TEAM_COLORS[team] || "#444";
-    html += `<tr class="standings-row"><td class="text-center" style="padding: 10px 2px;">${idx + 1}</td><td class="text-start team-accent-cell" style="padding: 10px 4px; white-space: nowrap; border-left: 4px solid ${teamColor} !important;"><strong>${name.toUpperCase()}</strong><span class="team-name-sub">${team}</span></td>`;
+    const leaderClass = idx === 0 ? " is-leader" : "";
+    html += `<tr class="standings-row${leaderClass}"><td class="col-rank rank-cell"><span class="rank-num">${idx + 1}</span></td><td class="col-driver driver-cell" style="--team-color:${teamColor};"><span class="driver-name">${name.toUpperCase()}</span><span class="driver-team">${team}</span></td>`;
 
     // Ensure the driver exists in the row even if they missed a race
     scoringSessions.forEach((s) => {
       const pos = d.positions[s.id || s.created_at];
-      html += `<td class="text-center pos-${pos}" style="padding: 10px 2px;">${pos || "-"}</td>`;
+      const posNum = parseInt(pos);
+      let pillClass = "";
+      let label = pos;
+      if (pos === "DNF") {
+        pillClass = " is-dnf";
+        label = "DNF";
+      } else if (posNum >= 1 && posNum <= 3) {
+        pillClass = ` pos-${posNum}`;
+      } else if (!pos) {
+        pillClass = " is-dnf";
+        label = "DNF";
+      }
+      html += `<td class="pos-cell"><span class="pos-pill${pillClass}" title="${label === "DNF" ? "Did Not Finish / no data" : ""}">${label}</span></td>`;
     });
 
     // Calculate gap to the driver ahead
     const gap =
       idx === 0
-        ? "-"
-        : `-${Math.abs(driversMap[driverNames[idx - 1]].points - d.points)}`;
+        ? "—"
+        : `−${Math.abs(driversMap[driverNames[idx - 1]].points - d.points)}`;
 
-    html += `<td class="text-end" style="padding: 10px 4px;"><strong>${d.points}</strong></td>`;
-    html += `<td class="text-end" style="color: #aaa; font-size: 0.85em; padding: 10px 4px;">${gap}</td></tr>`;
+    html += `<td class="col-pts pts-cell">${d.points}</td>`;
+    html += `<td class="col-gap gap-cell">${gap}</td></tr>`;
   });
+
 
   html += `</tbody></table></div>`;
   // Build constructor standings based on assigned teams
@@ -3293,7 +3643,341 @@ function renderStandingsTable() {
   } catch (err) {
     console.error("Failed to render driver assignments", err);
   }
+  try {
+    renderRecordsTable();
+  } catch (err) {
+    console.error("Failed to render records", err);
+  }
 }
+
+// ------- All-time Records / Stats -------
+function getTeamsForSeason(season) {
+  try {
+    const raw = JSON.parse(localStorage.getItem("driverTeamsBySeason") || "{}");
+    return raw[String(season)] || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function computeSeasonStandings(season) {
+  const drivers = {};
+  const sessions = allSessions
+    .filter(
+      (s) =>
+        s.season === season &&
+        ((s.category || "").toLowerCase() === "race" ||
+          (s.category || "").toLowerCase() === "sprint"),
+    );
+  sessions.forEach((session) => {
+    const seen = new Set();
+    const rsClass = session.race_story?.classification || [];
+    const dnfNames = new Set(
+      rsClass
+        .filter((e) => e.is_dnf || (e.status && !/FINISHED/i.test(e.status)))
+        .map((e) => (e.name || "").toUpperCase())
+        .filter(Boolean),
+    );
+    (session.results || []).forEach((res) => {
+      const name = res.name;
+      if (!name) return;
+      if (!drivers[name]) drivers[name] = { points: 0, wins: 0, podiums: 0, races: 0, fastest_laps: 0, dnfs: 0 };
+      const pos = parseInt(res.position);
+      const cat = (session.category || "").toLowerCase();
+      let pts = 0;
+      if (cat === "race") pts = [0, 25, 18, 15, 12, 10, 8, 6, 4, 2, 1][pos] || 0;
+      else if (cat === "sprint") pts = [0, 8, 7, 6, 5, 4, 3, 2, 1][pos] || 0;
+      drivers[name].points += pts;
+      if (!seen.has(name)) {
+        drivers[name].races += 1;
+        seen.add(name);
+        // Secondary DNF check: no valid finishing position OR classified as DNF in race_story
+        if (cat === "race" && (dnfNames.has(name) || !pos || pos <= 0)) {
+          drivers[name].dnfs += 1;
+        }
+      }
+      if (cat === "race") {
+        if (pos === 1) drivers[name].wins += 1;
+        if (pos >= 1 && pos <= 3) drivers[name].podiums += 1;
+      }
+    });
+    // Fallback: include drivers from race_story classification not already
+    // counted from session.results — this makes DNFs (and any other missing
+    // driver) count towards the GP (races) total.
+    rsClass.forEach((e) => {
+      const name = (e.name || "").toUpperCase();
+      if (!name || seen.has(name)) return;
+      const isDNF = e.is_dnf || (e.status && !/FINISHED/i.test(e.status));
+      if (!drivers[name]) drivers[name] = { points: 0, wins: 0, podiums: 0, races: 0, fastest_laps: 0, dnfs: 0 };
+      drivers[name].races += 1;
+      if ((session.category || "").toLowerCase() === "race" && isDNF) drivers[name].dnfs += 1;
+      seen.add(name);
+    });
+    // Fastest lap credit (race only)
+    const flName = ((session.race_story?.fastest_lap?.name) || "").toUpperCase();
+    if (flName && (session.category || "").toLowerCase() === "race") {
+      if (!drivers[flName]) drivers[flName] = { points: 0, wins: 0, podiums: 0, races: 0, fastest_laps: 0, dnfs: 0 };
+      drivers[flName].fastest_laps += 1;
+    }
+  });
+  return drivers;
+}
+
+
+function renderRecordsTable() {
+  const container = document.getElementById("records-container");
+  if (!container) return;
+  if (!allSessions || allSessions.length === 0) {
+    container.innerHTML = `<div class="empty-hint" style="padding:18px;color:#888;">No saved sessions yet — upload some races to build all-time records.</div>`;
+    return;
+  }
+
+  const seasons = Array.from(
+    new Set(allSessions.map((s) => s.season).filter((x) => x != null)),
+  ).sort((a, b) => a - b);
+
+  // Driver aggregates across all seasons
+  const driverAgg = {};
+  const teamAgg = {};
+  const driverChampions = {};
+  const constructorChampions = {};
+
+  seasons.forEach((season) => {
+    const standings = computeSeasonStandings(season);
+    const teams = getTeamsForSeason(season);
+
+    Object.entries(standings).forEach(([name, s]) => {
+      if (!driverAgg[name]) {
+        driverAgg[name] = { points: 0, wins: 0, podiums: 0, races: 0, fastest_laps: 0, dnfs: 0, titles: 0, seasons: new Set(), lastTeam: null };
+      }
+      driverAgg[name].points += s.points;
+      driverAgg[name].wins += s.wins;
+      driverAgg[name].podiums += s.podiums;
+      driverAgg[name].races += s.races;
+      driverAgg[name].fastest_laps += s.fastest_laps || 0;
+      driverAgg[name].dnfs += s.dnfs || 0;
+      driverAgg[name].seasons.add(season);
+      if (teams[name]) driverAgg[name].lastTeam = teams[name];
+    });
+
+
+    // Driver champion of season
+    const driverRanked = Object.entries(standings).sort((a, b) => b[1].points - a[1].points);
+    if (driverRanked.length && driverRanked[0][1].points > 0) {
+      const champ = driverRanked[0][0];
+      driverAgg[champ].titles += 1;
+      driverChampions[season] = champ;
+    }
+
+    // Constructor aggregates for this season
+    const teamSeason = {};
+    Object.entries(standings).forEach(([name, s]) => {
+      const team = teams[name] || "Unassigned";
+      if (!teamSeason[team]) teamSeason[team] = { points: 0, wins: 0, podiums: 0 };
+      teamSeason[team].points += s.points;
+      teamSeason[team].wins += s.wins;
+      teamSeason[team].podiums += s.podiums;
+    });
+    Object.entries(teamSeason).forEach(([team, s]) => {
+      if (team === "Unassigned") return;
+      if (!teamAgg[team]) {
+        teamAgg[team] = { points: 0, wins: 0, podiums: 0, one_twos: 0, front_row_lockouts: 0, titles: 0, seasons: new Set() };
+      }
+      teamAgg[team].points += s.points;
+      teamAgg[team].wins += s.wins;
+      teamAgg[team].podiums += s.podiums;
+      teamAgg[team].seasons.add(season);
+    });
+
+    // Front-row lockouts (Qualifying / Sprint Shootout) and 1-2 finishes (Race / Sprint)
+    // Group sessions by track+category; for each, find P1 and P2 drivers and check same team.
+    const seasonSessions = allSessions.filter((sn) => sn.season === season);
+    const byEvent = {};
+    seasonSessions.forEach((sn) => {
+      const key = `${sn.track_name}||${sn.category}`;
+      if (!byEvent[key]) byEvent[key] = [];
+      byEvent[key].push(sn);
+    });
+    Object.entries(byEvent).forEach(([key, group]) => {
+      const cat = (group[0].category || "").toLowerCase();
+      const isQuali = cat === "qualifying" || cat === "sprint shootout";
+      const isRace = cat === "race" || cat === "sprint";
+      if (!isQuali && !isRace) return;
+      // Prefer a session with a results array covering the full grid
+      const src = group.find((g) => (g.results || []).length >= 2) || group[0];
+      const results = src.results || [];
+      const posFor = (p) => results.find((r) => parseInt(r.position) === p);
+      const p1 = posFor(1);
+      const p2 = posFor(2);
+      if (!p1 || !p2) return;
+      const t1 = teams[p1.name] || null;
+      const t2 = teams[p2.name] || null;
+      if (!t1 || !t2 || t1 !== t2 || t1 === "Unassigned") return;
+      if (!teamAgg[t1]) {
+        teamAgg[t1] = { points: 0, wins: 0, podiums: 0, one_twos: 0, front_row_lockouts: 0, titles: 0, seasons: new Set() };
+      }
+      if (isQuali) teamAgg[t1].front_row_lockouts = (teamAgg[t1].front_row_lockouts || 0) + 1;
+      else teamAgg[t1].one_twos = (teamAgg[t1].one_twos || 0) + 1;
+    });
+    const teamRanked = Object.entries(teamSeason)
+      .filter(([t]) => t !== "Unassigned")
+      .sort((a, b) => b[1].points - a[1].points);
+    if (teamRanked.length && teamRanked[0][1].points > 0) {
+      const champTeam = teamRanked[0][0];
+      teamAgg[champTeam].titles += 1;
+      constructorChampions[season] = champTeam;
+    }
+  });
+
+  const isSeasonComplete = (() => {
+    // Heuristic: mark current/most-recent season as "in progress" if it equals max season
+    // Champions list shows finalized seasons only — we'll show all with a "*" for current.
+    return null;
+  })();
+  const currentMaxSeason = seasons[seasons.length - 1];
+
+  const driverRows = Object.entries(driverAgg)
+    .sort((a, b) => b[1].points - a[1].points)
+    .map(([name, d], idx) => {
+      const team = d.lastTeam || "Unassigned";
+      const color = TEAM_COLORS[team] || "#444";
+      const titleBadge = d.titles > 0
+        ? `<span class="rec-title-badge" title="${d.titles} championship${d.titles > 1 ? "s" : ""}">★ ${d.titles}</span>`
+        : "";
+      return `<tr class="standings-row${idx === 0 ? " is-leader" : ""}">
+        <td class="col-rank rank-cell"><span class="rank-num">${idx + 1}</span></td>
+        <td class="col-driver driver-cell" style="--team-color:${color};">
+          <span class="driver-name">${name.toUpperCase()} ${titleBadge}</span>
+          <span class="driver-team">${team}</span>
+        </td>
+        <td class="pts-cell">${d.points}</td>
+        <td class="rec-num">${d.wins}</td>
+        <td class="rec-num">${d.podiums}</td>
+        <td class="rec-num">${d.fastest_laps || 0}</td>
+        <td class="rec-num">${d.races}</td>
+        <td class="rec-num">${d.dnfs || 0}</td>
+        <td class="rec-num">${d.seasons.size}</td>
+      </tr>`;
+
+    })
+    .join("");
+
+  const teamRows = Object.entries(teamAgg)
+    .sort((a, b) => b[1].points - a[1].points)
+    .map(([team, t], idx) => {
+      const color = TEAM_COLORS[team] || "#444";
+      const titleBadge = t.titles > 0
+        ? `<span class="rec-title-badge" title="${t.titles} constructor title${t.titles > 1 ? "s" : ""}">★ ${t.titles}</span>`
+        : "";
+      return `<tr class="standings-row${idx === 0 ? " is-leader" : ""}">
+        <td class="col-rank rank-cell"><span class="rank-num">${idx + 1}</span></td>
+        <td class="driver-cell" style="--team-color:${color};">
+          <span class="driver-name">${team.toUpperCase()} ${titleBadge}</span>
+          <span class="driver-team">${t.seasons.size} season${t.seasons.size > 1 ? "s" : ""}</span>
+        </td>
+        <td class="pts-cell">${t.points}</td>
+        <td class="rec-num">${t.wins}</td>
+        <td class="rec-num">${t.podiums}</td>
+        <td class="rec-num">${t.one_twos || 0}</td>
+        <td class="rec-num">${t.front_row_lockouts || 0}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const champRows = seasons
+    .slice()
+    .reverse()
+    .map((season) => {
+      const dChamp = driverChampions[season] || "—";
+      const cChamp = constructorChampions[season] || "—";
+      const isCurrent = season === currentMaxSeason;
+      const dColor = TEAM_COLORS[(getTeamsForSeason(season)[dChamp]) || ""] || "#444";
+      const cColor = TEAM_COLORS[cChamp] || "#444";
+      return `<tr>
+        <td class="rec-season">S${season}${isCurrent ? '<span class="rec-current">live</span>' : ""}</td>
+        <td><span class="rec-champ-dot" style="background:${dColor};"></span>${dChamp.toUpperCase()}</td>
+        <td><span class="rec-champ-dot" style="background:${cColor};"></span>${cChamp}</td>
+      </tr>`;
+    })
+    .join("");
+
+  container.innerHTML = `
+    <div class="records-wrap">
+      <div class="records-legend">
+        <span><b>Pts</b> Total points</span>
+        <span><b>Wins</b> Race wins (P1 in Race or Sprint)</span>
+        <span><b>Pod</b> Podiums (P1–P3)</span>
+        <span><b>FL</b> Fastest laps</span>
+        <span><b>GP</b> Grands Prix entered (incl. DNFs)</span>
+        <span><b>DNF</b> Did-not-finish count</span>
+        <span><b>Sn</b> Seasons active</span>
+        <span><b>1-2</b> Constructor 1-2 finishes</span>
+        <span><b>FRL</b> Front-row lockouts (Qualifying)</span>
+        <span><b>★</b> Championship titles</span>
+      </div>
+      <div class="records-block">
+        <h3 class="records-title">Driver Records — All Seasons</h3>
+        <div class="table-responsive standings-wrap">
+          <table class="standings-table standings-v2 records-table">
+            <thead>
+              <tr>
+                <th class="col-rank">#</th>
+                <th class="col-driver">Driver</th>
+                <th class="col-pts" title="Total points">Pts</th>
+                <th class="rec-num" title="Race wins">Wins</th>
+                <th class="rec-num" title="Podiums (P1–P3)">Pod</th>
+                <th class="rec-num" title="Fastest Laps">FL</th>
+                <th class="rec-num" title="Grands Prix entered (incl. DNFs)">GP</th>
+                <th class="rec-num" title="Did not finish">DNF</th>
+                <th class="rec-num" title="Seasons active">Sn</th>
+              </tr>
+            </thead>
+            <tbody>${driverRows || `<tr><td colspan="9" class="rec-empty">No race results yet.</td></tr>`}</tbody>
+          </table>
+
+        </div>
+      </div>
+
+      <div class="records-block">
+        <h3 class="records-title">Constructor Records — All Seasons</h3>
+        <div class="table-responsive standings-wrap">
+          <table class="standings-table standings-v2 records-table">
+            <thead>
+              <tr>
+                <th class="col-rank">#</th>
+                <th class="col-driver">Team</th>
+                <th class="col-pts" title="Total points">Pts</th>
+                <th class="rec-num" title="Race wins">Wins</th>
+                <th class="rec-num" title="Podiums (P1–P3)">Pod</th>
+                <th class="rec-num" title="1-2 finishes (both cars P1 &amp; P2 in the race)">1-2</th>
+                <th class="rec-num" title="Front-row lockouts (both cars P1 &amp; P2 in qualifying)">FRL</th>
+              </tr>
+            </thead>
+            <tbody>${teamRows || `<tr><td colspan="7" class="rec-empty">Assign drivers to teams to build constructor records.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="records-block">
+        <h3 class="records-title">Champions by Season</h3>
+        <div class="table-responsive standings-wrap">
+          <table class="standings-table standings-v2 records-table records-champs">
+            <thead>
+              <tr>
+                <th>Season</th>
+                <th>Drivers' Champion</th>
+                <th>Constructors' Champion</th>
+              </tr>
+            </thead>
+            <tbody>${champRows || `<tr><td colspan="3" class="rec-empty">No completed seasons yet.</td></tr>`}</tbody>
+          </table>
+        </div>
+        <div class="rec-footnote">The latest season is marked "live" — its champion may still change.</div>
+      </div>
+    </div>
+  `;
+}
+
 
 // Driver team assignment helpers
 function getDriverTeams() {
@@ -3591,10 +4275,120 @@ function secondsToTimeString(seconds) {
 }
 
 // Collapsible sections helpers
+// ---------- Track Notes ----------
+const trackNotesCache = {}; // key -> notes text
+let trackNotesLoaded = false;
+const notesSaveTimers = {};
+
+async function loadTrackNotes() {
+  const client = getSupabaseClient({ silent: true });
+  if (!client) return;
+  try {
+    const { data, error } = await client.from("track_notes").select("track_key, notes");
+    if (error) {
+      console.warn("track_notes load failed", error);
+      return;
+    }
+    (data || []).forEach((row) => {
+      trackNotesCache[row.track_key] = row.notes || "";
+    });
+    trackNotesLoaded = true;
+    // If notes section is already rendered, refresh values
+    document.querySelectorAll("textarea.note-textarea[data-track]").forEach((ta) => {
+      const k = ta.dataset.track;
+      if (trackNotesCache[k] != null && !ta.dataset.dirty) {
+        ta.value = trackNotesCache[k];
+      }
+    });
+  } catch (err) {
+    console.warn("track_notes load error", err);
+  }
+}
+
+function setNotesStatus(msg, isError) {
+  const el = document.getElementById("notesStatus");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.style.color = isError ? "#ff6666" : "";
+}
+
+async function saveTrackNote(trackKey, notes) {
+  const client = getSupabaseClient();
+  if (!client) {
+    setNotesStatus("Notes need Supabase connection", true);
+    return;
+  }
+  setNotesStatus("Saving…");
+  try {
+    const { error } = await client
+      .from("track_notes")
+      .upsert({ track_key: trackKey, notes, updated_at: new Date().toISOString() }, { onConflict: "track_key" });
+    if (error) {
+      console.error("track_notes save failed", error);
+      setNotesStatus("Save failed: " + (error.message || "unknown"), true);
+      return;
+    }
+    trackNotesCache[trackKey] = notes;
+    setNotesStatus("Saved ✓");
+    setTimeout(() => setNotesStatus(""), 1500);
+  } catch (err) {
+    console.error(err);
+    setNotesStatus("Save error", true);
+  }
+}
+
+function renderNotesGrid() {
+  const grid = document.getElementById("notesGrid");
+  if (!grid) return;
+  if (grid.dataset.rendered === "1") return;
+  grid.dataset.rendered = "1";
+  grid.innerHTML = NOTES_TRACKS.map((t, i) => `
+    <div class="note-card">
+      <div class="note-head">
+        <span class="note-round">R${String(i + 1).padStart(2, "0")}</span>
+        <span class="note-flag">${t.flag}</span>
+        <span class="note-track">${t.label}</span>
+      </div>
+      <textarea
+        class="note-textarea"
+        data-track="${t.key}"
+        placeholder="Setup notes, braking points, tyre strategy, reminders…"
+      >${(trackNotesCache[t.key] || "").replace(/</g, "&lt;")}</textarea>
+    </div>
+  `).join("");
+
+  grid.querySelectorAll("textarea.note-textarea").forEach((ta) => {
+    ta.addEventListener("input", () => {
+      ta.dataset.dirty = "1";
+      const k = ta.dataset.track;
+      clearTimeout(notesSaveTimers[k]);
+      setNotesStatus("Editing…");
+      notesSaveTimers[k] = setTimeout(() => {
+        delete ta.dataset.dirty;
+        saveTrackNote(k, ta.value);
+      }, 700);
+    });
+    ta.addEventListener("blur", () => {
+      const k = ta.dataset.track;
+      if (ta.dataset.dirty) {
+        clearTimeout(notesSaveTimers[k]);
+        delete ta.dataset.dirty;
+        saveTrackNote(k, ta.value);
+      }
+    });
+  });
+
+  if (!trackNotesLoaded) loadTrackNotes();
+}
+
 function initCollapsibleSections() {
+
+
   try {
     const tabContainer = document.querySelector(".collapsible-tabs");
-    const tabs = Array.from(document.querySelectorAll(".section-tab"));
+    const tabs = Array.from(
+      document.querySelectorAll(".section-tab[data-target]"),
+    );
     const sections = Array.from(
       document.querySelectorAll(".collapsible-section"),
     );
@@ -3621,7 +4415,9 @@ function initCollapsibleSections() {
         tab.classList.toggle("active", tab.dataset.target === targetId);
       });
       localStorage.setItem(activeKey, targetId);
+      if (targetId === "section-notes") renderNotesGrid();
     }
+
 
     tabs.forEach((tab) => {
       const targetId = tab.dataset.target;
@@ -3636,10 +4432,10 @@ function initCollapsibleSections() {
     });
 
     if (tabContainer) {
-      enableDragReorder(tabContainer, ".section-tab", {
+      enableDragReorder(tabContainer, ".section-tab[data-target]", {
         onReorder: () => {
           const order = Array.from(
-            tabContainer.querySelectorAll(".section-tab"),
+            tabContainer.querySelectorAll(".section-tab[data-target]"),
           ).map((t) => t.dataset.target);
           localStorage.setItem(orderKey, JSON.stringify(order));
         },
@@ -3697,14 +4493,12 @@ function enableDragReorder(container, itemSelector, opts = {}) {
   });
 }
 
-// Apply drag-reorder to a freshly rendered table body. Call after innerHTML
-// updates that rebuild the rows.
-function enableTableRowReorder(tableSelector) {
-  document.querySelectorAll(tableSelector + " tbody").forEach((tbody) => {
-    enableDragReorder(tbody, "tr");
-    tbody.classList.add("reorderable-rows");
-  });
+// Drag-to-reorder for table rows is intentionally disabled — kept as a no-op
+// so existing call sites don't need to change.
+function enableTableRowReorder(_tableSelector) {
+  /* no-op */
 }
+
 
 
 // ============================================================
@@ -3748,11 +4542,36 @@ function renderRaceStory() {
   empty.style.display = "none";
   wrap.style.display = "block";
 
+  // Backfill lap 0 (grid position) for sessions saved before lap-0 support.
+  const startPos =
+    currentData.starting_position ?? currentData.starting_pos ?? null;
+  if (
+    startPos &&
+    rs.position_history.length &&
+    rs.position_history[0].lap !== 0
+  ) {
+    rs.position_history.unshift({ lap: 0, position: Number(startPos) });
+  }
+  (rs.podium || []).forEach((p) => {
+    if (p.history?.length && p.history[0].lap !== 0 && p.history[0].lap === 1) {
+      // Keep podium aligned visually; reuse lap-1 position as lap-0 fallback.
+      p.history.unshift({ lap: 0, position: p.history[0].position });
+    }
+  });
+
   // Headline
   const start = rs.position_history[0]?.position;
   const end = rs.position_history[rs.position_history.length - 1]?.position;
   const gained = (start ?? 0) - (end ?? 0);
   const headline = document.getElementById("raceStoryHeadline");
+  const badges = getSessionBadges(currentData);
+  const fl = rs.fastest_lap;
+  const fmtFl = (ms) => {
+    if (!ms) return "";
+    const m = Math.floor(ms / 60000);
+    const s = ((ms % 60000) / 1000).toFixed(3).padStart(6, "0");
+    return `${m}:${s}`;
+  };
   if (headline) {
     headline.innerHTML = `
       <span class="rs-pill"><b>${rs.player_name}</b></span>
@@ -3763,13 +4582,128 @@ function renderRaceStory() {
       </span>
       <span class="rs-pill">Overtakes made ${rs.overtakes_made.length}</span>
       <span class="rs-pill">Lost ${rs.overtakes_suffered.length}</span>
+      ${badges.grandSlam ? `<span class="rs-pill rs-grand-slam">👑 GRAND SLAM</span>` : ""}
     `;
   }
 
   renderPositionChart(rs);
   renderOvertakesChart(rs);
   renderStintStrip();
+  renderDamageSection();
   renderTopSpeedList(rs);
+  renderFinalClassification(rs);
+  renderCompareTab();
+}
+
+
+function renderFinalClassification(rs) {
+  const el = document.getElementById("finalClassification");
+  if (!el) return;
+  const rawList = rs.classification || [];
+  if (!rawList.length) {
+    el.innerHTML = `<div class="race-story-empty">No classification data.</div>`;
+    return;
+  }
+  // Sort: finishers first (by position asc), then DNFs at the bottom (by laps desc)
+  const isDnfEntry = (e) => e.is_dnf || (e.status && !/FINISHED/i.test(e.status));
+  const finishers = rawList
+    .filter((e) => !isDnfEntry(e))
+    .sort((a, b) => (parseInt(a.position) || 999) - (parseInt(b.position) || 999));
+  const dnfs = rawList
+    .filter(isDnfEntry)
+    .sort((a, b) => (b.laps || 0) - (a.laps || 0));
+  const list = [...finishers, ...dnfs];
+  const fl = rs.fastest_lap;
+  const flName = fl ? (fl.name || "").toUpperCase() : "";
+  const leader = list[0];
+  const fmtGap = (sec) => {
+    if (!isFinite(sec) || sec <= 0) return "—";
+    if (sec < 60) return `+${sec.toFixed(3)}`;
+    const m = Math.floor(sec / 60);
+    const s = (sec - m * 60).toFixed(3).padStart(6, "0");
+    return `+${m}:${s}`;
+  };
+
+  const rows = list
+    .map((e, i) => {
+      const isLeader = i === 0;
+      const isPlayer = e.name === (rs.player_name || "").toUpperCase();
+      const isFL = flName && e.name === flName;
+      const dnf = e.is_dnf || (e.status && !/FINISHED/i.test(e.status));
+      let gapLeader = "—";
+      let gapNext = "—";
+      if (isLeader) {
+        gapLeader = "LEADER";
+        gapNext = "—";
+      } else if (dnf) {
+        gapLeader = e.status || "DNF";
+        gapNext = "—";
+      } else if (e.laps < leader.laps) {
+        const lapDiff = leader.laps - e.laps;
+        gapLeader = `+${lapDiff} lap${lapDiff > 1 ? "s" : ""}`;
+        const prev = list[i - 1];
+        if (prev && prev.laps > e.laps) {
+          const d = prev.laps - e.laps;
+          gapNext = `+${d} lap${d > 1 ? "s" : ""}`;
+        } else if (prev) {
+          gapNext = fmtGap(e.time_s - prev.time_s);
+        }
+      } else {
+        gapLeader = fmtGap(e.time_s - leader.time_s);
+        const prev = list[i - 1];
+        gapNext = prev ? fmtGap(e.time_s - prev.time_s) : "—";
+      }
+      const color = teamColorFor(e.team) || "#444";
+      const pos = e.position;
+      const posClass =
+        dnf ? "dnf" : pos === 1 ? "p1" : pos === 2 ? "p2" : pos === 3 ? "p3" : "";
+      const posLabel = dnf ? "DNF" : pos;
+      return `<tr class="fc-row${isPlayer ? " is-player" : ""}${isFL ? " is-fl" : ""}${dnf ? " is-dnf" : ""}" style="--team-color:${color};">
+        <td class="fc-pos"><span class="fc-pos-pill ${posClass}">${posLabel}</span></td>
+        <td class="fc-driver">
+          <span class="fc-name">${e.name}${isFL ? ' <span class="fc-fl-badge" title="Fastest Lap">FL</span>' : ""}</span>
+          <span class="fc-team">${e.team}</span>
+        </td>
+        <td class="fc-laps">${e.laps}</td>
+        <td class="fc-time">${e.time_str || (dnf ? (e.status || "—") : "—")}</td>
+        <td class="fc-gap">${gapLeader}</td>
+        <td class="fc-gap">${gapNext}</td>
+        <td class="fc-best">${e.best_lap_str || "—"}</td>
+        <td class="fc-pits">${e.pits}</td>
+        <td class="fc-pts">${e.points}</td>
+      </tr>`;
+    })
+    .join("");
+
+  const flBanner = fl
+    ? `<div class="fc-fl-banner">
+        <span class="fc-fl-chip">⚡ FASTEST LAP</span>
+        <span class="fc-fl-driver">${(fl.name || "").toUpperCase()}</span>
+        ${fl.lap_time_str ? `<span class="fc-fl-time">${fl.lap_time_str}</span>` : ""}
+        ${fl.lap ? `<span class="fc-fl-meta">Lap ${fl.lap}</span>` : ""}
+      </div>`
+
+    : "";
+
+  el.innerHTML = `
+    ${flBanner}
+    <table class="fc-table">
+      <thead>
+        <tr>
+          <th>Pos</th>
+          <th>Driver</th>
+          <th>Laps</th>
+          <th>Time</th>
+          <th>Gap (Leader)</th>
+          <th>Interval</th>
+          <th>Best Lap</th>
+          <th>Pits</th>
+          <th>Pts</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
 }
 
 function renderPositionChart(rs) {
@@ -3834,7 +4768,7 @@ function renderPositionChart(rs) {
         },
       },
       scales: {
-        x: { title: { display: true, text: "Lap" } },
+        x: { title: { display: true, text: "Lap" }, min: 0, ticks: { stepSize: 1, precision: 0 } },
         y: {
           reverse: true,
           min: 1,
@@ -3973,7 +4907,7 @@ function renderStintStrip() {
 function renderTopSpeedList(rs) {
   const el = document.getElementById("topSpeedList");
   if (!el) return;
-  const top = rs.speed_traps.slice(0, 20);
+  const top = rs.speed_traps || [];
   if (!top.length) {
     el.innerHTML = `<div class="race-story-empty">No speed-trap data.</div>`;
     return;
@@ -4004,6 +4938,258 @@ function renderTopSpeedList(rs) {
     })
     .join("");
   el.innerHTML = header + rows;
+}
+
+function renderDamageSection() {
+  const el = document.getElementById("damageSection");
+  if (!el) return;
+  const laps = (currentData?.lap_history || []).filter((l) => l && l.damage);
+  if (!laps.length) {
+    el.innerHTML = `<div class="race-story-empty">No per-lap damage data available. Re-upload the race JSON to view damage progression.</div>`;
+    return;
+  }
+  const components = [
+    ["fl_wing", "FL Wing", "#e10600"],
+    ["fr_wing", "FR Wing", "#ff6b35"],
+    ["rear_wing", "Rear Wing", "#f4d03f"],
+    ["floor", "Floor", "#9b59b6"],
+    ["diffuser", "Diffuser", "#3498db"],
+    ["sidepod", "Sidepod", "#2ecc71"],
+    ["gearbox", "Gearbox", "#e67e22"],
+    ["engine", "Engine", "#c0392b"],
+  ];
+  // Only show components that had non-zero damage at some point
+  const active = components.filter(([k]) => laps.some((l) => (l.damage[k] || 0) > 0));
+  const finalLap = laps[laps.length - 1];
+  const finals = components.map(([k, label, c]) => ({
+    key: k, label, color: c, value: finalLap.damage[k] || 0,
+  }));
+  const pills = finals
+    .map((f) => `<span class="damage-pill" style="border-color:${f.color};color:${f.value > 0 ? f.color : "var(--secondary-text)"}">
+      <b>${f.label}</b> ${f.value}%
+    </span>`)
+    .join("");
+  let chartWrap = "";
+  if (active.length) {
+    chartWrap = `<div class="rs-canvas-wrap" style="margin-top:12px"><canvas id="damageChart"></canvas></div>`;
+  } else {
+    chartWrap = `<div class="race-story-empty" style="margin-top:12px">No damage taken this race — clean drive!</div>`;
+  }
+  // System faults (DRS stuck closed, ERS fault) — telemetry only records these
+  // when the game actually flags a fault; older uploads will simply show none.
+  const drsLaps = laps.filter((l) => l.damage.drs_fault).map((l) => l.lap);
+  const ersLaps = laps.filter((l) => l.damage.ers_fault).map((l) => l.lap);
+  const faultPills = [];
+  if (drsLaps.length) {
+    faultPills.push(`<span class="damage-pill" style="border-color:#e10600;color:#e10600" title="Active Aero fault (wing did not open/close) on laps: ${drsLaps.join(", ")}"><b>⚠ Active Aero Fault</b> laps ${drsLaps[0]}${drsLaps.length > 1 ? "–" + drsLaps[drsLaps.length - 1] : ""}</span>`);
+  }
+  if (ersLaps.length) {
+    faultPills.push(`<span class="damage-pill" style="border-color:#f4d03f;color:#f4d03f" title="ERS fault on laps: ${ersLaps.join(", ")}"><b>⚠ ERS Fault</b> laps ${ersLaps[0]}${ersLaps.length > 1 ? "–" + ersLaps[ersLaps.length - 1] : ""}</span>`);
+  }
+  const faultsHtml = faultPills.length ? `<div class="damage-pills" style="margin-bottom:8px">${faultPills.join("")}</div>` : "";
+  el.innerHTML = `${faultsHtml}<div class="damage-pills">${pills}</div>${chartWrap}`;
+  if (active.length) {
+    const ctx = document.getElementById("damageChart");
+    if (ctx) {
+      if (charts.damageChart) charts.damageChart.destroy();
+      charts.damageChart = new Chart(ctx.getContext("2d"), {
+        type: "line",
+        data: {
+          labels: laps.map((l) => l.lap),
+          datasets: active.map(([k, label, color]) => ({
+            label,
+            data: laps.map((l) => l.damage[k] || 0),
+            borderColor: color,
+            backgroundColor: color + "33",
+            tension: 0.25,
+            pointRadius: 0,
+            borderWidth: 2,
+          })),
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            y: { beginAtZero: true, max: 100, title: { display: true, text: "Damage %" } },
+            x: { title: { display: true, text: "Lap" } },
+          },
+          plugins: { legend: { position: "bottom" } },
+        },
+      });
+    }
+  }
+}
+
+// ==================== COMPARE TAB ====================
+
+function fmtLapMs(ms) {
+  if (!ms || ms <= 0) return "—";
+  const m = Math.floor(ms / 60000);
+  const s = ((ms % 60000) / 1000).toFixed(3).padStart(6, "0");
+  return `${m}:${s}`;
+}
+
+function renderCompareTab() {
+  const empty = document.getElementById("compareEmpty");
+  const wrap = document.getElementById("compareContent");
+  if (!empty || !wrap) return;
+  const rs = currentData?.race_story;
+  const dlt = rs?.driver_lap_times || [];
+  const playerName = (rs?.player_name || currentData?.driver_name || "").toUpperCase();
+  const playerEntry = dlt.find((d) => d.name === playerName);
+  const others = dlt.filter((d) => d.name !== playerName && d.laps.some((l) => l.ms > 0));
+  if (!playerEntry || !others.length) {
+    empty.style.display = "block";
+    wrap.style.display = "none";
+    return;
+  }
+  empty.style.display = "none";
+  wrap.style.display = "block";
+
+  const select = document.getElementById("compareDriverSelect");
+  if (!select) return;
+  // Save previous selection
+  const prev = select.value;
+  select.innerHTML = others
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((d) => `<option value="${d.name}">${d.name} — ${normalizeTeamName(d.team)}</option>`)
+    .join("");
+  if (prev && others.some((d) => d.name === prev)) select.value = prev;
+  if (!select.dataset.bound) {
+    select.dataset.bound = "1";
+    select.addEventListener("change", () => renderCompareCharts(playerEntry, select.value));
+  }
+  renderCompareCharts(playerEntry, select.value);
+}
+
+function renderCompareCharts(playerEntry, opponentName) {
+  const rs = currentData?.race_story;
+  const dlt = rs?.driver_lap_times || [];
+  const opp = dlt.find((d) => d.name === opponentName);
+  if (!opp) return;
+
+  const maxLaps = Math.max(playerEntry.laps.length, opp.laps.length);
+  const labels = [];
+  const youMs = [];
+  const oppMs = [];
+  const deltas = [];
+  for (let i = 0; i < maxLaps; i++) {
+    labels.push(i + 1);
+    const yl = playerEntry.laps[i];
+    const ol = opp.laps[i];
+    const y = yl && yl.ms > 0 ? yl.ms : null;
+    const o = ol && ol.ms > 0 ? ol.ms : null;
+    youMs.push(y);
+    oppMs.push(o);
+    deltas.push(y !== null && o !== null ? +((y - o) / 1000).toFixed(3) : null);
+  }
+
+  const validDeltas = deltas.filter((d) => d !== null);
+  const avgDelta = validDeltas.length
+    ? validDeltas.reduce((a, b) => a + b, 0) / validDeltas.length
+    : 0;
+  const totalYou = youMs.filter((v) => v).reduce((a, b) => a + b, 0);
+  const totalOpp = oppMs.filter((v) => v).reduce((a, b) => a + b, 0);
+  const summary = document.getElementById("compareSummary");
+  if (summary) {
+    summary.innerHTML = `Avg delta: <b style="color:${avgDelta < 0 ? "#2ecc71" : "#e10600"}">${avgDelta > 0 ? "+" : ""}${avgDelta.toFixed(3)}s</b> · Total: <b>${fmtLapMs(totalYou)}</b> vs <b>${fmtLapMs(totalOpp)}</b>`;
+  }
+  const thYou = document.getElementById("compareThYou");
+  const thOpp = document.getElementById("compareThOpp");
+  if (thYou) thYou.textContent = `You (${playerEntry.name})`;
+  if (thOpp) thOpp.textContent = opp.name;
+
+  // Delta bar chart
+  const deltaCtx = document.getElementById("compareDeltaChart");
+  if (deltaCtx) {
+    if (charts.compareDeltaChart) charts.compareDeltaChart.destroy();
+    charts.compareDeltaChart = new Chart(deltaCtx.getContext("2d"), {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [{
+          label: "Delta (s) — negative = you were faster",
+          data: deltas,
+          backgroundColor: deltas.map((d) =>
+            d === null ? "rgba(120,120,120,0.3)" : d < 0 ? "rgba(46,204,113,0.85)" : "rgba(225,6,0,0.85)"
+          ),
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: { title: { display: true, text: "Δ seconds" } },
+          x: { title: { display: true, text: "Lap" } },
+        },
+        plugins: { legend: { display: false } },
+      },
+    });
+  }
+
+  // Overlay line chart
+  const overlayCtx = document.getElementById("compareOverlayChart");
+  if (overlayCtx) {
+    if (charts.compareOverlayChart) charts.compareOverlayChart.destroy();
+    // Player is always red so it stays consistent across comparisons;
+    // opponent uses their team color, falling back to a distinct cyan
+    // and to another distinct hue if the opponent team also maps to red.
+    const playerColor = "#e10600";
+    let oppColor = teamColorFor(opp.team) || "#00b8d4";
+    if (oppColor.toLowerCase() === playerColor.toLowerCase()) oppColor = "#00b8d4";
+    charts.compareOverlayChart = new Chart(overlayCtx.getContext("2d"), {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: `You (${playerEntry.name})`,
+            data: youMs.map((v) => (v ? +(v / 1000).toFixed(3) : null)),
+            borderColor: playerColor,
+            backgroundColor: playerColor + "33",
+            tension: 0.2,
+            spanGaps: true,
+          },
+          {
+            label: opp.name,
+            data: oppMs.map((v) => (v ? +(v / 1000).toFixed(3) : null)),
+            borderColor: oppColor,
+            backgroundColor: oppColor + "33",
+            tension: 0.2,
+            spanGaps: true,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        scales: {
+          y: { title: { display: true, text: "Lap time (s)" } },
+          x: { title: { display: true, text: "Lap" } },
+        },
+        plugins: { legend: { position: "bottom" } },
+      },
+    });
+  }
+
+  // Table
+  const tbody = document.getElementById("compareTableBody");
+  if (tbody) {
+    tbody.innerHTML = labels
+      .map((lap, i) => {
+        const d = deltas[i];
+        const cls = d === null ? "" : d < 0 ? "delta-pos" : "delta-neg";
+        return `<tr>
+          <td class="text-center">${lap}</td>
+          <td class="text-center">${fmtLapMs(youMs[i])}</td>
+          <td class="text-center">${fmtLapMs(oppMs[i])}</td>
+          <td class="text-center ${cls}">${d === null ? "—" : (d > 0 ? "+" : "") + d.toFixed(3)}</td>
+        </tr>`;
+      })
+      .join("");
+  }
 }
 
 function renderPaceDeltaChart() {
@@ -4116,19 +5302,80 @@ function renderPaceDeltaChart() {
   window.addEventListener("scroll", () => { if (tipEl) tipEl.classList.remove("show"); }, true);
 })();
 
-// Sidebar collapse toggle
+// Sidebar collapse toggle + mobile drawer behavior
 (function () {
+  const MOBILE_BP = 880;
+  const isMobile = () => window.matchMedia(`(max-width: ${MOBILE_BP}px)`).matches;
+
   const apply = (collapsed) => {
     document.getElementById("appShell")?.classList.toggle("sidebar-collapsed", collapsed);
+    // On mobile, "collapsed" also means the drawer is closed
+    if (isMobile()) {
+      document.body.classList.toggle("sidebar-drawer-open", !collapsed);
+    } else {
+      document.body.classList.remove("sidebar-drawer-open");
+    }
     try { localStorage.setItem("sidebarCollapsed", collapsed ? "1" : "0"); } catch (e) {}
   };
+
+  const closeDrawer = () => apply(true);
+
   document.addEventListener("DOMContentLoaded", () => {
-    const initial = (() => { try { return localStorage.getItem("sidebarCollapsed") === "1"; } catch (e) { return false; }})();
+    // On mobile, always start with the drawer closed regardless of prior state
+    const stored = (() => { try { return localStorage.getItem("sidebarCollapsed") === "1"; } catch (e) { return false; }})();
+    const initial = isMobile() ? true : stored;
     apply(initial);
+
     document.getElementById("sidebarToggle")?.addEventListener("click", () => {
       const collapsed = !document.getElementById("appShell")?.classList.contains("sidebar-collapsed");
       apply(collapsed);
     });
     document.getElementById("sidebarExpand")?.addEventListener("click", () => apply(false));
+    document.getElementById("sidebarBackdrop")?.addEventListener("click", closeDrawer);
+
+    // Close drawer on Escape
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && document.body.classList.contains("sidebar-drawer-open")) closeDrawer();
+    });
+
+    // On mobile: tapping a session row or season box should close the drawer
+    document.addEventListener("click", (e) => {
+      if (!isMobile()) return;
+      if (!document.body.classList.contains("sidebar-drawer-open")) return;
+      const t = e.target.closest(".session-row, .season-box, .session-card");
+      if (t && !e.target.closest(".delete-btn")) {
+        // small delay so the click handler runs first
+        setTimeout(closeDrawer, 60);
+      }
+    });
+
+    // Auto-scroll the active section tab into view on mobile
+    const scrollActiveTab = () => {
+      const bar = document.querySelector(".collapsible-tabs.sticky-tabs");
+      const active = bar?.querySelector(".section-tab.active");
+      if (!bar || !active) return;
+      const offset = active.offsetLeft - bar.clientWidth / 2 + active.clientWidth / 2;
+      bar.scrollTo({ left: Math.max(0, offset), behavior: "smooth" });
+    };
+    document.querySelectorAll(".section-tab").forEach((t) => {
+      t.addEventListener("click", () => setTimeout(scrollActiveTab, 30));
+    });
+    setTimeout(scrollActiveTab, 300);
+
+    // React to viewport changes (rotation, resize)
+    let wasMobile = isMobile();
+    window.addEventListener("resize", () => {
+      const nowMobile = isMobile();
+      if (nowMobile !== wasMobile) {
+        wasMobile = nowMobile;
+        // Reset drawer state on breakpoint crossing
+        if (nowMobile) apply(true);
+        else {
+          document.body.classList.remove("sidebar-drawer-open");
+          apply(stored);
+        }
+      }
+    });
   });
 })();
+
