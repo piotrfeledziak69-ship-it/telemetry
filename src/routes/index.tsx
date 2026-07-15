@@ -88,9 +88,18 @@ function MainPage() {
 
         <StatsBar stats={stats} />
 
-        <h2 className="mb-3 text-sm font-bold uppercase tracking-widest text-white/60">
-          Tracks · Season {season}
-        </h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-bold uppercase tracking-widest text-white/60">
+            Tracks · Season {season}
+          </h2>
+          <Link
+            to="/season/$season/teammate"
+            params={{ season: String(season) }}
+            className="rounded-md border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white hover:border-red-500/60"
+          >
+            🤝 Teammate H2H
+          </Link>
+        </div>
 
         {loading && <div className="text-white/50">Loading sessions…</div>}
         {err && <div className="text-red-400">Failed to load: {err}</div>}
