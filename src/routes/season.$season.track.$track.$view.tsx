@@ -13,6 +13,7 @@ const LABELS: Record<string, string> = {
   "quali-results": "Qualifying",
   assignments: "Teams",
   "race-story": "Race Story",
+  compare: "Compare Lap Times",
   graphs: "Graphs",
   data: "Laps",
   practice: "Practice",
@@ -30,7 +31,7 @@ function ViewPage() {
   useEffect(() => {
     setLoading(true);
     setSlow(false);
-    const t = setTimeout(() => setSlow(true), 3000);
+    const t = setTimeout(() => setSlow(true), 4000);
     const onMsg = (e: MessageEvent) => {
       if (e?.data && e.data.type === "f1-embed-ready") setLoading(false);
     };
@@ -78,7 +79,6 @@ function ViewPage() {
             key={src}
             title={label}
             src={src}
-            onLoad={() => setLoading(false)}
             className="min-h-[85vh] w-full"
           />
         </div>
