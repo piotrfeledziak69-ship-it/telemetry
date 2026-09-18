@@ -34,19 +34,38 @@ let currentSeason = 1;
 let qualiGapMode = "leader";
 let qualiTimeMode = "lap"; // "lap" | "sectors"
 
+// Normalizes team names so variants like "Aston Martin 26" or
+// "aston martin" are treated as the same team ("Aston Martin").
+function canonicalTeam(t) {
+  if (!t) return "";
+  let s = String(t).trim();
+  // Strip trailing season/year suffixes: "Aston Martin 26", "Red Bull 2026".
+  s = s.replace(/[\s\-_]*(?:19|20)?\d{2}\s*$/, "").trim();
+  if (!s) return "";
+  const lower = s.toLowerCase();
+  // Match against the known colour palette keys, case-insensitively.
+  if (typeof TEAM_COLORS !== "undefined") {
+    for (const k of Object.keys(TEAM_COLORS)) {
+      if (k.toLowerCase() === lower) return k;
+    }
+  }
+  // Title-case fallback so "ASTON MARTIN" and "Aston Martin" merge.
+  return s.replace(/\w\S*/g, (w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+}
+
 // Team lookup that tolerates casing differences between the
 // telemetry driver names (UPPERCASE) and manually saved keys.
 function teamForDriver(teams, name) {
   if (!name) return "";
   const key = String(name).trim().toUpperCase();
   if (teams) {
-    if (teams[name]) return teams[name];
+    if (teams[name]) return canonicalTeam(teams[name]);
     for (const k of Object.keys(teams)) {
-      if (String(k).trim().toUpperCase() === key) return teams[k];
+      if (String(k).trim().toUpperCase() === key) return canonicalTeam(teams[k]);
     }
   }
   // Fallback: teams recorded inside the uploaded telemetry itself.
-  return teamFromTelemetry(key);
+  return canonicalTeam(teamFromTelemetry(key));
 }
 
 // Name -> team map rebuilt from every saved session's telemetry, so drivers
@@ -60,7 +79,7 @@ function teamFromTelemetry(upperName) {
     const put = (n, t) => {
       if (!n || !t) return;
       const k = String(n).trim().toUpperCase();
-      const v = String(t).trim();
+      const v = canonicalTeam(t);
       if (!k || !v || v.toLowerCase() === "unassigned") return;
       if (!map[k]) map[k] = v;
     };
@@ -2479,7 +2498,7 @@ function renderQualiResults() {
 
       const team =
         teamForDriver(teamsAssigned, res.name) ||
-        (res.team && String(res.team).trim()) ||
+        canonicalTeam(res.team) ||
         "Unassigned";
       const teamColor = teamColorFor(team);
 
@@ -6294,7 +6313,7 @@ function buildStartingGridData() {
       .map((e) => ({
         position: Number(e.position),
         name: String(e.name).toUpperCase(),
-        team: e.team || teamForDriver(teams, e.name) || "Unassigned",
+        team: canonicalTeam(e.team) || teamForDriver(teams, e.name) || "Unassigned",
         time: e.lap_time_str || "",
         source: "Race start (lap 0)",
       }));
