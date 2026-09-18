@@ -37,13 +37,49 @@ let qualiTimeMode = "lap"; // "lap" | "sectors"
 // Team lookup that tolerates casing differences between the
 // telemetry driver names (UPPERCASE) and manually saved keys.
 function teamForDriver(teams, name) {
-  if (!teams || !name) return "";
-  if (teams[name]) return teams[name];
+  if (!name) return "";
   const key = String(name).trim().toUpperCase();
-  for (const k of Object.keys(teams)) {
-    if (String(k).trim().toUpperCase() === key) return teams[k];
+  if (teams) {
+    if (teams[name]) return teams[name];
+    for (const k of Object.keys(teams)) {
+      if (String(k).trim().toUpperCase() === key) return teams[k];
+    }
   }
-  return "";
+  // Fallback: teams recorded inside the uploaded telemetry itself.
+  return teamFromTelemetry(key);
+}
+
+// Name -> team map rebuilt from every saved session's telemetry, so drivers
+// that were never assigned manually still show their real team.
+let _telemetryTeamCache = null;
+let _telemetryTeamCacheSize = -1;
+function teamFromTelemetry(upperName) {
+  const sessions = (typeof allSessions !== "undefined" && allSessions) || [];
+  if (!_telemetryTeamCache || _telemetryTeamCacheSize !== sessions.length) {
+    const map = {};
+    const put = (n, t) => {
+      if (!n || !t) return;
+      const k = String(n).trim().toUpperCase();
+      const v = String(t).trim();
+      if (!k || !v || v.toLowerCase() === "unassigned") return;
+      if (!map[k]) map[k] = v;
+    };
+    sessions.forEach((s) => {
+      (Array.isArray(s.results) ? s.results : []).forEach((r) =>
+        put(r && r.name, r && r.team),
+      );
+      const rs = s && s.race_story;
+      if (rs) {
+        put(rs.player_name || s.driver_name, rs.player_team);
+        (Array.isArray(rs.starting_grid) ? rs.starting_grid : []).forEach((e) =>
+          put(e && e.name, e && e.team),
+        );
+      }
+    });
+    _telemetryTeamCache = map;
+    _telemetryTeamCacheSize = sessions.length;
+  }
+  return _telemetryTeamCache[upperName] || "";
 }
 
 // Sector times of a driver's best lap (from the packet session history).
