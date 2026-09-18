@@ -2467,7 +2467,11 @@ function renderQualiResults() {
           gapTo = previousTime;
         }
         if (gapTo && gapTo > 0 && currentTime > gapTo) {
-          gapLabel = "+" + secondsToTimeString(currentTime - gapTo);
+          const d = currentTime - gapTo;
+          gapLabel =
+            d < 60
+              ? "+" + d.toFixed(3)
+              : "+" + secondsToTimeString(d);
         } else if (gapTo && gapTo > 0 && currentTime <= gapTo) {
           gapLabel = "-";
         }
