@@ -686,22 +686,25 @@ button:hover, .download-btn:hover {
 .quali-segments-grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 /* Qualifying table: fixed column widths so the Gap column always fits,
    in both Best Lap and S1/S2/S3 modes, on any screen width. */
-.quali-table { width: 100%; table-layout: fixed; min-width: 0 !important; }
-.quali-table th, .quali-table td { overflow: hidden; text-overflow: ellipsis; }
-.quali-table .col-pos { width: 34px; }
-.quali-table .col-time { width: 88px; }
-.quali-table .col-gap { width: 74px; white-space: nowrap; }
-.quali-table.is-sectors .col-sec { width: 62px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.quali-table.is-sectors .col-gap { width: 68px; }
+.quali-table { width: 100%; table-layout: fixed; min-width: 0 !important; font-size: 0.9em; }
+.quali-table th, .quali-table td { overflow: hidden; text-overflow: ellipsis; padding: 8px 6px !important; letter-spacing: 0.05em; }
+.quali-table .col-pos { width: 30px; text-align: center; }
+.quali-table .col-time { width: 84px; white-space: nowrap; }
+.quali-table .col-gap { width: 78px; white-space: nowrap; }
+.quali-table.is-sectors .col-sec { width: 56px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.quali-table.is-sectors .col-gap { width: 62px; }
 .quali-table td.sector-best { color: #b14aed; font-weight: 700; }
+.quali-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 @media (max-width: 640px) {
+  .quali-table { font-size: 0.8em; }
+  .quali-table th, .quali-table td { padding: 7px 4px !important; }
   .quali-table .col-pos { width: 26px; }
   .quali-table .col-time { width: 74px; }
-  .quali-table .col-gap { width: 60px; }
-  .quali-table.is-sectors { font-size: 0.72rem; }
-  .quali-table.is-sectors .col-sec { width: 52px; }
+  .quali-table .col-gap { width: 66px; }
+  .quali-table.is-sectors .col-sec { width: 48px; }
   .quali-table.is-sectors .col-gap { width: 56px; }
 }
+
 
 /* Practice fuel calc */
 .fuel-calc-container {
@@ -3050,4 +3053,28 @@ body.embed-upload .download-btn.small:hover {
   .season-stats-host #seasonSummaryCards { gap: 6px; }
   .season-stats-host #seasonSummaryCards .stat-card { padding: 8px 9px; }
   .season-stats-host #seasonSummaryCards .stat-value { font-size: 0.86rem; }
+}
+
+/* Inline qualifying toolbar (visible inside embedded views) */
+.quali-inline-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.quali-inline-btn {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.15));
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+}
+.quali-inline-btn:hover {
+  background: rgba(225, 6, 0, 0.18);
+  border-color: rgba(225, 6, 0, 0.5);
 }

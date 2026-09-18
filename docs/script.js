@@ -1188,7 +1188,10 @@ function processTelemetryData(data) {
         let player_stints_data = [];
         let pit_laps_from_stints = {};
         if (Array.isArray(tyre_stints_v2)) {
-          const entry = tyre_stints_v2.find((e) => e.name === driver_name);
+          const entry = tyre_stints_v2.find(
+            (e) => String(e.name || "").trim().toUpperCase() === driver_name,
+          );
+
           if (entry) {
             player_stints_data = entry["tyre-stint-history"] || [];
             player_stints_data.forEach((stint, i) => {
@@ -1215,6 +1218,8 @@ function processTelemetryData(data) {
                   name: String(
                     e["driver-name"] || e.name || "UNKNOWN",
                   ).toUpperCase(),
+                  team: e.team || e["team-name"] || "",
+
                   position:
                     e["final-classification"]?.["position"] ||
                     e["track-position"] ||
@@ -2335,6 +2340,32 @@ function renderQualiResults() {
   section.style.display = "block";
   bodyContainer.innerHTML = ""; // Clear old content
 
+  // Inline toolbar (the outer section header is hidden in embedded views)
+  const toolbar = document.createElement("div");
+  toolbar.className = "quali-inline-toolbar";
+  const gapBtn = document.createElement("button");
+  gapBtn.type = "button";
+  gapBtn.className = "btn-secondary quali-inline-btn";
+  gapBtn.textContent =
+    qualiGapMode === "leader" ? "Switch to Gap to Next" : "Switch to Gap to Leader";
+  gapBtn.addEventListener("click", () => {
+    qualiGapMode = qualiGapMode === "leader" ? "next" : "leader";
+    updateQualiGapButton();
+    renderQualiResults();
+  });
+  const secBtn = document.createElement("button");
+  secBtn.type = "button";
+  secBtn.className = "btn-secondary quali-inline-btn";
+  secBtn.textContent = qualiTimeMode === "sectors" ? "Show Best Lap" : "Show Sectors";
+  secBtn.addEventListener("click", () => {
+    qualiTimeMode = qualiTimeMode === "lap" ? "sectors" : "lap";
+    updateQualiSectorButton();
+    renderQualiResults();
+  });
+  toolbar.appendChild(gapBtn);
+  toolbar.appendChild(secBtn);
+  bodyContainer.appendChild(toolbar);
+
   const segmentsGridContainer = document.createElement("div");
   segmentsGridContainer.className = "quali-segments-grid";
   bodyContainer.appendChild(segmentsGridContainer);
@@ -2410,7 +2441,10 @@ function renderQualiResults() {
       if (lowerTitle.includes("1") && pos > 16) isEliminated = true;
       else if (lowerTitle.includes("2") && pos > 10) isEliminated = true;
 
-      const team = teamForDriver(teamsAssigned, res.name) || "Unassigned";
+      const team =
+        teamForDriver(teamsAssigned, res.name) ||
+        (res.team && String(res.team).trim()) ||
+        "Unassigned";
       const teamColor = teamColorFor(team);
 
       let rowStyle = "";
@@ -2433,7 +2467,11 @@ function renderQualiResults() {
           gapTo = previousTime;
         }
         if (gapTo && gapTo > 0 && currentTime > gapTo) {
-          gapLabel = "+" + secondsToTimeString(currentTime - gapTo);
+          const d = currentTime - gapTo;
+          gapLabel =
+            d < 60
+              ? "+" + d.toFixed(3)
+              : "+" + secondsToTimeString(d);
         } else if (gapTo && gapTo > 0 && currentTime <= gapTo) {
           gapLabel = "-";
         }
