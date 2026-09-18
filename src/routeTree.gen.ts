@@ -9,26 +9,51 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthRouteImport } from './routes/auth'
+import { Route as CareersRouteImport } from './routes/careers'
+import { Route as RecordsRouteImport } from './routes/records'
+import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as SeasonSeasonTeammateRouteImport } from './routes/season.$season.teammate'
+import { Route as SeasonSeasonTitleRouteImport } from './routes/season.$season.title'
 import { Route as SeasonSeasonTrackTrackRouteImport } from './routes/season.$season.track.$track'
 import { Route as SeasonSeasonTrackTrackIndexRouteImport } from './routes/season.$season.track.$track.index'
 import { Route as SeasonSeasonTrackTrackViewRouteImport } from './routes/season.$season.track.$track.$view'
+import { Route as SeasonSeasonTrackTrackStrategiesRouteImport } from './routes/season.$season.track.$track.strategies'
 
-const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
-  id: '/sitemap.xml',
-  path: '/sitemap.xml',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthRoute = AuthRouteImport.update({
+  id: '/auth',
+  path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CareersRoute = CareersRouteImport.update({
+  id: '/careers',
+  path: '/careers',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RecordsRoute = RecordsRouteImport.update({
+  id: '/records',
+  path: '/records',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
+  id: '/sitemap.xml',
+  path: '/sitemap.xml',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SeasonSeasonTeammateRoute = SeasonSeasonTeammateRouteImport.update({
   id: '/season/$season/teammate',
   path: '/season/$season/teammate',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SeasonSeasonTitleRoute = SeasonSeasonTitleRouteImport.update({
+  id: '/season/$season/title',
+  path: '/season/$season/title',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SeasonSeasonTrackTrackRoute = SeasonSeasonTrackTrackRouteImport.update({
@@ -48,73 +73,106 @@ const SeasonSeasonTrackTrackViewRoute =
     path: '/$view',
     getParentRoute: () => SeasonSeasonTrackTrackRoute,
   } as any)
+const SeasonSeasonTrackTrackStrategiesRoute =
+  SeasonSeasonTrackTrackStrategiesRouteImport.update({
+    id: '/strategies',
+    path: '/strategies',
+    getParentRoute: () => SeasonSeasonTrackTrackRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
+  '/careers': typeof CareersRoute
+  '/records': typeof RecordsRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/season/$season/teammate': typeof SeasonSeasonTeammateRoute
+  '/season/$season/title': typeof SeasonSeasonTitleRoute
   '/season/$season/track/$track': typeof SeasonSeasonTrackTrackRouteWithChildren
   '/season/$season/track/$track/$view': typeof SeasonSeasonTrackTrackViewRoute
+  '/season/$season/track/$track/strategies': typeof SeasonSeasonTrackTrackStrategiesRoute
   '/season/$season/track/$track/': typeof SeasonSeasonTrackTrackIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
+  '/careers': typeof CareersRoute
+  '/records': typeof RecordsRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/season/$season/teammate': typeof SeasonSeasonTeammateRoute
+  '/season/$season/title': typeof SeasonSeasonTitleRoute
   '/season/$season/track/$track/$view': typeof SeasonSeasonTrackTrackViewRoute
+  '/season/$season/track/$track/strategies': typeof SeasonSeasonTrackTrackStrategiesRoute
   '/season/$season/track/$track': typeof SeasonSeasonTrackTrackIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/auth': typeof AuthRoute
+  '/careers': typeof CareersRoute
+  '/records': typeof RecordsRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/season/$season/teammate': typeof SeasonSeasonTeammateRoute
+  '/season/$season/title': typeof SeasonSeasonTitleRoute
   '/season/$season/track/$track': typeof SeasonSeasonTrackTrackRouteWithChildren
   '/season/$season/track/$track/$view': typeof SeasonSeasonTrackTrackViewRoute
+  '/season/$season/track/$track/strategies': typeof SeasonSeasonTrackTrackStrategiesRoute
   '/season/$season/track/$track/': typeof SeasonSeasonTrackTrackIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/auth'
+    | '/careers'
+    | '/records'
     | '/sitemap.xml'
     | '/season/$season/teammate'
+    | '/season/$season/title'
     | '/season/$season/track/$track'
     | '/season/$season/track/$track/$view'
+    | '/season/$season/track/$track/strategies'
     | '/season/$season/track/$track/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/auth'
+    | '/careers'
+    | '/records'
     | '/sitemap.xml'
     | '/season/$season/teammate'
+    | '/season/$season/title'
     | '/season/$season/track/$track/$view'
+    | '/season/$season/track/$track/strategies'
     | '/season/$season/track/$track'
   id:
     | '__root__'
     | '/'
+    | '/auth'
+    | '/careers'
+    | '/records'
     | '/sitemap.xml'
     | '/season/$season/teammate'
+    | '/season/$season/title'
     | '/season/$season/track/$track'
     | '/season/$season/track/$track/$view'
+    | '/season/$season/track/$track/strategies'
     | '/season/$season/track/$track/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuthRoute: typeof AuthRoute
+  CareersRoute: typeof CareersRoute
+  RecordsRoute: typeof RecordsRoute
   SitemapDotxmlRoute: typeof SitemapDotxmlRoute
   SeasonSeasonTeammateRoute: typeof SeasonSeasonTeammateRoute
+  SeasonSeasonTitleRoute: typeof SeasonSeasonTitleRoute
   SeasonSeasonTrackTrackRoute: typeof SeasonSeasonTrackTrackRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/sitemap.xml': {
-      id: '/sitemap.xml'
-      path: '/sitemap.xml'
-      fullPath: '/sitemap.xml'
-      preLoaderRoute: typeof SitemapDotxmlRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -122,11 +180,46 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth': {
+      id: '/auth'
+      path: '/auth'
+      fullPath: '/auth'
+      preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/careers': {
+      id: '/careers'
+      path: '/careers'
+      fullPath: '/careers'
+      preLoaderRoute: typeof CareersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/records': {
+      id: '/records'
+      path: '/records'
+      fullPath: '/records'
+      preLoaderRoute: typeof RecordsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sitemap.xml': {
+      id: '/sitemap.xml'
+      path: '/sitemap.xml'
+      fullPath: '/sitemap.xml'
+      preLoaderRoute: typeof SitemapDotxmlRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/season/$season/teammate': {
       id: '/season/$season/teammate'
       path: '/season/$season/teammate'
       fullPath: '/season/$season/teammate'
       preLoaderRoute: typeof SeasonSeasonTeammateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/season/$season/title': {
+      id: '/season/$season/title'
+      path: '/season/$season/title'
+      fullPath: '/season/$season/title'
+      preLoaderRoute: typeof SeasonSeasonTitleRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/season/$season/track/$track': {
@@ -150,17 +243,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SeasonSeasonTrackTrackViewRouteImport
       parentRoute: typeof SeasonSeasonTrackTrackRoute
     }
+    '/season/$season/track/$track/strategies': {
+      id: '/season/$season/track/$track/strategies'
+      path: '/strategies'
+      fullPath: '/season/$season/track/$track/strategies'
+      preLoaderRoute: typeof SeasonSeasonTrackTrackStrategiesRouteImport
+      parentRoute: typeof SeasonSeasonTrackTrackRoute
+    }
   }
 }
 
 interface SeasonSeasonTrackTrackRouteChildren {
   SeasonSeasonTrackTrackViewRoute: typeof SeasonSeasonTrackTrackViewRoute
+  SeasonSeasonTrackTrackStrategiesRoute: typeof SeasonSeasonTrackTrackStrategiesRoute
   SeasonSeasonTrackTrackIndexRoute: typeof SeasonSeasonTrackTrackIndexRoute
 }
 
 const SeasonSeasonTrackTrackRouteChildren: SeasonSeasonTrackTrackRouteChildren =
   {
     SeasonSeasonTrackTrackViewRoute: SeasonSeasonTrackTrackViewRoute,
+    SeasonSeasonTrackTrackStrategiesRoute:
+      SeasonSeasonTrackTrackStrategiesRoute,
     SeasonSeasonTrackTrackIndexRoute: SeasonSeasonTrackTrackIndexRoute,
   }
 
@@ -171,10 +274,24 @@ const SeasonSeasonTrackTrackRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuthRoute: AuthRoute,
+  CareersRoute: CareersRoute,
+  RecordsRoute: RecordsRoute,
   SitemapDotxmlRoute: SitemapDotxmlRoute,
   SeasonSeasonTeammateRoute: SeasonSeasonTeammateRoute,
+  SeasonSeasonTitleRoute: SeasonSeasonTitleRoute,
   SeasonSeasonTrackTrackRoute: SeasonSeasonTrackTrackRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.ts'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
+  }
+}

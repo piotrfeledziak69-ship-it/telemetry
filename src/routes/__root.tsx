@@ -7,7 +7,7 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import "../styles.css";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -78,12 +78,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
       { title: "F1 Telemetry Analyzer" },
-      { name: "description", content: "Analyze uploaded F1 telemetry sessions, season stats, race stories, records, and track-by-track performance." },
+      { name: "description", content: "Season standings, race stories, and telemetry from your F1 uploads." },
       { name: "author", content: "F1 Telemetry Analyzer" },
       { property: "og:title", content: "F1 Telemetry Analyzer" },
-      { property: "og:description", content: "Analyze uploaded F1 telemetry sessions, season stats, race stories, records, and track-by-track performance." },
+      { property: "og:description", content: "Season standings, race stories, and telemetry from your F1 uploads." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
+      { name: "twitter:title", content: "F1 Telemetry Analyzer" },
+      { name: "twitter:description", content: "Season standings, race stories, and telemetry from your F1 uploads." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/503b8ee5-72ad-4360-b420-85c00bc49a9d/id-preview-15595008--92064a28-4347-49e0-9ccd-3d4853040e8e.lovable.app-1784146677592.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/503b8ee5-72ad-4360-b420-85c00bc49a9d/id-preview-15595008--92064a28-4347-49e0-9ccd-3d4853040e8e.lovable.app-1784146677592.png" },
     ],
   }),
   shellComponent: RootShell,
@@ -108,11 +112,50 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <Outlet />
+      <AuthGate>
+        <Outlet />
+      </AuthGate>
     </QueryClientProvider>
   );
+}
+
+function AuthGate({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+  const [authed, setAuthed] = useState(false);
+  useEffect(() => {
+    let active = true;
+    import("@/lib/supabase").then(({ supabase }) => {
+      supabase.auth.getSession().then(({ data }) => {
+        if (!active) return;
+        setAuthed(!!data.session);
+        setReady(true);
+      });
+      const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+        setAuthed(!!s);
+        router.invalidate();
+      });
+      return () => sub.subscription.unsubscribe();
+    });
+    return () => { active = false; };
+  }, [router]);
+
+  if (!ready) return <div className="flex min-h-screen items-center justify-center bg-[#0a0a0f] text-white/60 text-sm">Loading…</div>;
+  const path = typeof window !== "undefined" ? window.location.pathname : "";
+  if (!authed && path !== "/auth") {
+    if (typeof window !== "undefined") window.location.replace("/auth");
+    return null;
+  }
+  if (authed && path !== "/auth" && path !== "/careers") {
+    let career: string | null = null;
+    try { career = window.localStorage.getItem("f1.career"); } catch {}
+    if (!career) {
+      window.location.replace("/careers");
+      return null;
+    }
+  }
+  return <>{children}</>;
+
 }

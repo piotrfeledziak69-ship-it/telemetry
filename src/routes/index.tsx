@@ -10,13 +10,16 @@ import {
   seasonStats,
   trackFlag,
   trackMapUrl,
+  trackMapFallbackUrl,
   trackSlug,
   titleCaseTrack,
   badgesFor,
+  racePosition,
   appEmbedUrl,
   type Session,
 } from "@/lib/f1-shell";
 import { ShellHeader, ShellPage } from "@/components/f1/ShellHeader";
+import { shareSeasonStats } from "@/lib/share-stats";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -39,18 +42,39 @@ function MainPage() {
   const [loading, setLoading] = useState(!cached);
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => { setSeason(getSavedSeason()); }, []);
-
   useEffect(() => {
     let cancelled = false;
-    if (cacheIsFresh() && cached) { setLoading(false); return; }
-    setLoading(sessions.length === 0);
-    fetchSessions()
-      .then((rows) => { if (!cancelled) setSessions(rows); })
-      .catch((e) => { if (!cancelled) setErr(String(e)); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+    // Fresh cache (<15s old, e.g. just came from a subpage): paint instantly,
+    // skip the network round-trip entirely.
+    if (!cacheIsFresh() || sessions.length === 0) {
+      fetchSessions()
+        .then((rows) => {
+          if (!cancelled) setSessions(rows);
+        })
+        .catch((e) => {
+          if (!cancelled) setErr(String(e));
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }
+    const onMsg = (e: MessageEvent) => {
+      if (e?.data?.type !== "f1-upload" && e?.data?.type !== "f1-sessions-updated") return;
+      fetchSessions()
+        .then((rows) => !cancelled && setSessions(rows))
+        .catch(() => {});
+    };
+    window.addEventListener("message", onMsg);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("message", onMsg);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const saved = getSavedSeason();
+    if (saved) setSeason(saved);
   }, []);
 
   const seasonSessions = useMemo(
@@ -66,39 +90,52 @@ function MainPage() {
     <>
       <ShellHeader crumbs={[{ label: `Season ${season}` }]} />
       <ShellPage>
-        <div className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="mb-4 flex flex-col items-center gap-2">
           <span className="text-xs uppercase tracking-widest text-white/50">Season</span>
-          {SEASONS.map((n) => (
-            <button
-              key={n}
-              onClick={() => pick(n)}
-              className={
-                "rounded-md border px-3 py-1.5 text-sm font-semibold transition " +
-                (season === n
-                  ? "border-red-500 bg-red-500 text-white"
-                  : "border-white/15 text-white/70 hover:border-white/40")
-              }
-            >
-              S{n}
-            </button>
-          ))}
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            {SEASONS.map((n) => (
+              <button
+                key={n}
+                onClick={() => pick(n)}
+                className={
+                  "rounded-md border px-3 py-1.5 text-sm font-semibold transition " +
+                  (season === n
+                    ? "border-red-500 bg-red-500 text-white"
+                    : "border-white/15 text-white/70 hover:border-white/40")
+                }
+              >
+                S{n}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <UploadPanel />
 
-        <StatsBar stats={stats} />
+        <div className="mb-5 flex flex-wrap items-center justify-center gap-2">
+          <Link
+            to="/season/$season/title"
+            params={{ season: String(season) }}
+            className="rounded-md border border-white/15 px-3 py-1.5 text-xs font-bold uppercase tracking-widest text-white/70 transition hover:border-red-500/60 hover:text-white"
+          >
+            🏆 Title Race
+          </Link>
+          <Link
+            to="/records"
+            className="rounded-md border border-white/15 px-3 py-1.5 text-xs font-bold uppercase tracking-widest text-white/70 transition hover:border-purple-400/60 hover:text-white"
+          >
+            ⏱️ Personal Records
+          </Link>
+        </div>
+
+        <UploadPanel season={season} />
+
+        <StatsBar stats={stats} season={season} />
+
 
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-bold uppercase tracking-widest text-white/60">
             Tracks · Season {season}
           </h2>
-          <Link
-            to="/season/$season/teammate"
-            params={{ season: String(season) }}
-            className="rounded-md border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white hover:border-red-500/60"
-          >
-            🤝 Teammate H2H
-          </Link>
         </div>
 
         {loading && <div className="text-white/50">Loading sessions…</div>}
@@ -109,7 +146,7 @@ function MainPage() {
           </div>
         )}
 
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {trackGroups.map((g) => (
             <TrackCard
               key={`${trackSlug(g.track)}::${g.category}`}
@@ -125,43 +162,85 @@ function MainPage() {
   );
 }
 
-function UploadPanel() {
-  const src = appEmbedUrl({ season: 1, track: "", view: "upload" });
+function UploadPanel({ season }: { season: number }) {
+  const src = appEmbedUrl({ season, track: "", view: "upload" });
+  const [height, setHeight] = useState(112);
+
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      const d = ev?.data;
+      if (d?.type === "f1-embed-height" && d.view === "upload") {
+        const h = Number(d.height);
+        if (Number.isFinite(h)) setHeight(Math.min(Math.max(h + 4, 96), 260));
+      }
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
   return (
-    <div className="mb-6 rounded-lg border border-white/10 bg-white/[0.03] p-3">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="text-xs font-bold uppercase tracking-widest text-white/60">Upload sessions</div>
-        <div className="text-[11px] text-white/40">Race + Qualifying · batch supported</div>
+    <div className="mb-6 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+      <div className="mb-1 flex items-center justify-between">
+        <div className="text-[11px] font-bold uppercase tracking-widest text-white/60">Upload sessions</div>
+        <div className="text-[10px] text-white/40">Race · Qualifying · Practice · batch</div>
       </div>
       <iframe
         title="Upload sessions"
         src={src}
         loading="lazy"
-        className="w-full rounded border-0 bg-transparent"
-        style={{ height: 220 }}
+        className="w-full rounded border-0 bg-transparent transition-[height] duration-200"
+        style={{ height }}
       />
     </div>
   );
 }
 
-function StatsBar({ stats }: { stats: ReturnType<typeof seasonStats> }) {
+function StatsBar({ stats, season }: { stats: ReturnType<typeof seasonStats>; season: number }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
   const items = [
     { label: "GP Wins", value: stats.raceWins, icon: "🏆" },
     { label: "Sprint Wins", value: stats.sprintWins, icon: "🏁" },
     { label: "GP Poles", value: stats.gpPoles, icon: "⏱️" },
     { label: "Sprint Poles", value: stats.sprintPoles, icon: "⚡" },
-    { label: "Podiums", value: stats.podiums, icon: "🥂" },
     { label: "Fastest Laps", value: stats.fastestLaps, icon: "💜" },
+    { label: "DNFs", value: stats.dnfs, icon: "💥" },
   ];
+  const onShare = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await shareSeasonStats({ season, ...stats });
+      setMsg(res === "shared" ? "Shared ✓" : "Image saved ✓");
+    } catch {
+      setMsg("Could not create the image");
+    } finally {
+      setBusy(false);
+      setTimeout(() => setMsg(null), 4000);
+    }
+  };
   return (
-    <div className="mb-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-      {items.map((it) => (
-        <div key={it.label} className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-3">
-          <div className="text-[10px] uppercase tracking-widest text-white/50">{it.label}</div>
-          <div className="mt-1 text-xl font-black">{it.icon} {it.value}</div>
-        </div>
-      ))}
+    <div className="mb-6">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+        {items.map((it) => (
+          <div key={it.label} className="rounded-md border border-white/10 bg-white/[0.03] px-3 py-3">
+            <div className="text-[10px] uppercase tracking-widest text-white/50">{it.label}</div>
+            <div className="mt-1 text-lg font-black sm:text-xl">{it.icon} {it.value}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex items-center justify-end gap-2">
+        {msg && <span className="text-[11px] text-white/50">{msg}</span>}
+        <button
+          onClick={onShare}
+          disabled={busy}
+          className="rounded-md border border-white/15 px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest text-white/70 transition hover:border-red-500/60 hover:text-white disabled:opacity-50"
+        >
+          {busy ? "Creating…" : "📤 Share season card"}
+        </button>
+      </div>
     </div>
+
   );
 }
 
@@ -171,7 +250,11 @@ function TrackCard({ season, track, category, sessions }: { season: number; trac
     const b = badgesFor(s);
     Object.entries(b).forEach(([k, v]) => { if (v) badgeAgg[k] = true; });
   });
+  const positions = sessions.map(racePosition).filter((n): n is number => !!n);
+  const bestPos = positions.length ? Math.min(...positions) : null;
+  const [imgSrc, setImgSrc] = useState(trackMapUrl(track));
   const [imgOk, setImgOk] = useState(true);
+  const triedFallback = useMemo(() => ({ v: false }), [track]);
   const display = titleCaseTrack(track);
   const catColor = category === "Sprint" ? "#f59e0b" : category === "Practice" ? "#64748b" : "#ef4444";
   return (
@@ -181,15 +264,18 @@ function TrackCard({ season, track, category, sessions }: { season: number; trac
       search={{ cat: category }}
       className="group flex flex-col overflow-hidden rounded-lg border border-white/10 bg-white/[0.03] transition hover:-translate-y-0.5 hover:border-red-500/60"
     >
-      <div className="relative aspect-[16/9] bg-black/40">
+      <div className="relative hidden aspect-[16/9] bg-black/40 sm:block">
         {imgOk ? (
           <img
-            src={trackMapUrl(track)}
+            src={imgSrc}
             alt={display}
             loading="lazy"
             decoding="async"
             className="h-full w-full object-contain p-3"
-            onError={() => setImgOk(false)}
+            onError={() => {
+              if (!triedFallback.v) { triedFallback.v = true; setImgSrc(trackMapFallbackUrl(track)); }
+              else setImgOk(false);
+            }}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-4xl opacity-40">{trackFlag(track)}</div>
@@ -197,9 +283,9 @@ function TrackCard({ season, track, category, sessions }: { season: number; trac
         <div className="absolute right-2 top-2 flex flex-wrap gap-1">
           {badgeAgg.gs && <Tag color="#c084fc">GS</Tag>}
           {badgeAgg.win && <Tag color="#ffd700">W</Tag>}
-          {badgeAgg.pole && <Tag color="#5ad1ff">P</Tag>}
           {badgeAgg.fl && <Tag color="#a855f7">FL</Tag>}
-          {!badgeAgg.win && badgeAgg.podium && <Tag color="#cd7f32">P3</Tag>}
+          {!badgeAgg.win && badgeAgg.podium && bestPos && <Tag color="#cd7f32">P{bestPos}</Tag>}
+           {badgeAgg.dnf && <Tag color="#ef4444">DNF</Tag>}
         </div>
       </div>
       <div className="flex flex-1 flex-col gap-2 p-3">

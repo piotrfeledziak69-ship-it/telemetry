@@ -1,7 +1,64 @@
+// ---------------------------------------------------------------
+// Security: HTML escaping / sanitization for untrusted telemetry text.
+// Uploaded JSON and DB rows are user-controlled and are rendered via
+// innerHTML in many places, so all strings are neutralized on ingest.
+// ---------------------------------------------------------------
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+function sanitizeText(value) {
+  if (value == null) return value;
+  return String(value).replace(/[<>"'`&\\]/g, "").slice(0, 300);
+}
+function sanitizeDeep(value, depth) {
+  depth = depth || 0;
+  if (depth > 12) return null;
+  if (typeof value === "string") return sanitizeText(value);
+  if (Array.isArray(value)) return value.map((v) => sanitizeDeep(v, depth + 1));
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const k of Object.keys(value)) out[sanitizeText(k)] = sanitizeDeep(value[k], depth + 1);
+    return out;
+  }
+  return value;
+}
+
 let allSessions = [];
 let currentData = null;
 let currentSeason = 1;
 let qualiGapMode = "leader";
+let qualiTimeMode = "lap"; // "lap" | "sectors"
+
+// Team lookup that tolerates casing differences between the
+// telemetry driver names (UPPERCASE) and manually saved keys.
+function teamForDriver(teams, name) {
+  if (!teams || !name) return "";
+  if (teams[name]) return teams[name];
+  const key = String(name).trim().toUpperCase();
+  for (const k of Object.keys(teams)) {
+    if (String(k).trim().toUpperCase() === key) return teams[k];
+  }
+  return "";
+}
+
+// Sector times of a driver's best lap (from the packet session history).
+function bestLapSectors(entry) {
+  const sh = (entry && entry["session-history"]) || {};
+  const laps = sh["lap-history-data"] || [];
+  const idx = (sh["best-lap-time-lap-num"] || 0) - 1;
+  const lap = laps[idx] || null;
+  if (!lap) return { s1: "", s2: "", s3: "" };
+  return {
+    s1: lap["sector-1-time-str"] || "",
+    s2: lap["sector-2-time-str"] || "",
+    s3: lap["sector-3-time-str"] || "",
+  };
+}
 const charts = {};
 
 // ---------------------------------------------------------------
@@ -21,6 +78,19 @@ if (EMBED_VIEW) {
   document.documentElement.classList.add(cls);
   document.body && document.body.classList.add(cls);
   document.addEventListener("DOMContentLoaded", () => document.body.classList.add(cls));
+}
+
+// Report content height to the host page so the upload iframe
+// can grow only while busy (processing / errors).
+if (EMBED_VIEW === "upload" && window.parent !== window) {
+  const postHeight = () => {
+    const h = Math.ceil(document.body.scrollHeight);
+    window.parent.postMessage({ type: "f1-embed-height", view: "upload", height: h }, "*");
+  };
+  window.addEventListener("load", () => {
+    postHeight();
+    try { new ResizeObserver(postHeight).observe(document.body); } catch {}
+  });
 }
 
 function _embedApplyView() {
@@ -43,21 +113,172 @@ function _embedNotifyReady(status) {
 }
 function _embedSelectSession() {
   if (!EMBED_TRACK) { _embedNotifyReady("no-track"); return; }
-  const wanted = String(EMBED_TRACK).toLowerCase();
+  const wanted = normalizeTrackName(EMBED_TRACK);
   const wantedCat = EMBED_CAT ? String(EMBED_CAT).toLowerCase() : null;
-  const match = allSessions.find(
+  const seasonN = Number(EMBED_SEASON || currentSeason);
+
+  const isPracticeView = EMBED_VIEW === "practice";
+  // For the practice view we pick a Practice or Sprint session regardless of
+  // `cat`, so the "Race → Practice" link surfaces every uploaded practice
+  // AND the sprint for the same weekend.
+  const isPracticeLikeSession = (s) => {
+    const c = (s.category || "").toLowerCase();
+    const st = (s.session_type || "").toLowerCase();
+    // Only Practice sessions and the (race) Sprint. Exclude Qualifying and Sprint Shootout/Qualifying.
+    return (
+      c === "practice" || c.startsWith("practice") ||
+      c === "sprint" ||
+      /^p[123]$/.test(st) || st.includes("practice") || st.includes("fp")
+    );
+  };
+  const sprintCats = ["sprint", "sprint qualifying", "sprint shootout"];
+  const inBucket = (s) => {
+    const c = (s.category || "").toLowerCase();
+    if (c === "practice") return true; // practice belongs to either weekend bucket
+    return wantedCat === "sprint" ? sprintCats.includes(c) : !sprintCats.includes(c);
+  };
+  const rank = (s) => {
+    const c = (s.category || "").toLowerCase();
+    if (c === "race") return 0;
+    if (c === "sprint") return 1;
+    if (c === "qualifying") return 2;
+    if (c === "sprint qualifying" || c === "sprint shootout") return 3;
+    if (c === "practice") return 4;
+    return 5;
+  };
+  const trackSessions = allSessions.filter(
     (s) =>
-      s.season === Number(EMBED_SEASON || currentSeason) &&
-      (s.track_name || "").toLowerCase() === wanted &&
-      (!wantedCat || (s.category || "").toLowerCase() === wantedCat),
+      Number(s.season) === seasonN &&
+      normalizeTrackName(s.track_name) === wanted,
   );
+
+  let candidates;
+  if (isPracticeView) {
+    candidates = trackSessions.filter(isPracticeLikeSession);
+  } else {
+    const exact = wantedCat
+      ? trackSessions.filter((s) => (s.category || "").toLowerCase() === wantedCat)
+      : [];
+    // No Race/Sprint uploaded yet: fall back to the best session actually
+    // uploaded for THIS weekend (quali, then practice) instead of another track.
+    candidates = exact.length ? exact : trackSessions.filter(inBucket);
+  }
+  const match = candidates.slice().sort((a, b) => rank(a) - rank(b))[0];
   if (match) {
     currentData = match;
+    const _es = document.getElementById("embedEmptyState");
+    if (_es) _es.style.display = "none";
     try { renderContent(); } catch (e) { console.warn(e); }
+    if (isPracticeView) { try { _embedRenderPracticePicker(); } catch (e) { console.warn(e); } }
     _embedNotifyReady("ok");
   } else {
+    currentData = null;
+    _embedShowEmptyState();
+    if (isPracticeView) { try { _embedRenderPracticePicker(); } catch (e) { console.warn(e); } }
     _embedNotifyReady("no-match");
   }
+}
+
+function _embedShowEmptyState() {
+  const content = document.getElementById("content");
+  if (content) content.style.display = "none";
+  let box = document.getElementById("embedEmptyState");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "embedEmptyState";
+    box.style.cssText =
+      "margin:40px auto;max-width:520px;text-align:center;padding:28px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;background:rgba(255,255,255,0.03);color:var(--secondary-text,#9aa)";
+    box.innerHTML =
+      '<div style="font-size:2rem;margin-bottom:8px">\uD83D\uDCED</div>' +
+      '<div style="font-weight:800;color:#fff;margin-bottom:6px">No data for this session yet</div>' +
+      '<div style="font-size:0.9rem">Upload the telemetry file for this weekend to see it here.</div>';
+    (document.querySelector(".main-content") || document.body).appendChild(box);
+  }
+  box.style.display = "block";
+}
+
+// Render a session picker at the top of the practice section listing every
+// Practice (and Sprint) session uploaded for this track so the user can
+// switch between P1/P2/P3/Sprint.
+function _embedRenderPracticePicker() {
+  const section = document.getElementById("section-practice");
+  if (!section) return;
+  const wanted = normalizeTrackName(EMBED_TRACK || "");
+  const seasonN = Number(EMBED_SEASON || currentSeason);
+  const isPracticeLike = (s) => {
+    const c = (s.category || "").toLowerCase();
+    const st = (s.session_type || "").toLowerCase();
+    // Only Practice, Sprint (race), and Race. Explicitly exclude Sprint Quali/Shootout.
+    if (c === "sprint qualifying" || c === "sprint shootout") return false;
+    return (
+      c === "practice" || c.startsWith("practice") ||
+      c === "sprint" ||
+      c === "race" ||
+      /^p[123]$/.test(st) || st.includes("practice") || st.includes("fp")
+    );
+  };
+  const orderKey = (s) => {
+    const c = (s.category || "").toLowerCase();
+    const st = (s.session_type || "").toLowerCase();
+    if (/^p1$/.test(st) || st.includes("practice 1") || st.includes("fp1")) return "1";
+    if (/^p2$/.test(st) || st.includes("practice 2") || st.includes("fp2")) return "2";
+    if (/^p3$/.test(st) || st.includes("practice 3") || st.includes("fp3")) return "3";
+    if (c === "sprint") return "5";
+    if (c === "race") return "6";
+    return "9" + (s.session_type || "");
+  };
+  const list = allSessions
+    .filter((s) =>
+      Number(s.season) === seasonN &&
+      normalizeTrackName(s.track_name) === wanted &&
+      isPracticeLike(s),
+    )
+
+    .sort((a, b) => orderKey(a).localeCompare(orderKey(b)));
+
+  let picker = document.getElementById("embedPracticePicker");
+  if (!picker) {
+    picker = document.createElement("div");
+    picker.id = "embedPracticePicker";
+    picker.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 18px;padding:12px;border:1px solid var(--border-color);border-radius:10px;background:rgba(255,255,255,0.04);";
+    const body = section.querySelector(".section-body");
+    if (body) body.prepend(picker); else section.prepend(picker);
+  }
+  if (list.length === 0) {
+    const totalPract = allSessions.filter(isPracticeLike).length;
+    picker.innerHTML = `<div style="color:var(--secondary-text);font-size:0.9rem">No Practice or Sprint sessions uploaded for this track yet (season ${seasonN}, track "${wanted}"). Total practice/sprint sessions across all tracks: ${totalPract}. Upload a Practice_*.json or Sprint_*.json to see the summary here.</div>`;
+    return;
+  }
+  const currentId = currentData && (currentData.id || currentData.created_at);
+  const labelFor = (s) => {
+    const st = s.session_type || "";
+    const c = (s.category || "").toLowerCase();
+    if (c === "sprint") return "Sprint";
+    if (c === "race") return "Race";
+    if (st) return st;
+    return "Practice";
+  };
+  picker.innerHTML =
+    '<div style="width:100%;font-size:0.72rem;letter-spacing:0.14em;text-transform:uppercase;color:var(--secondary-text);margin-bottom:4px">Practice & Sprint Sessions</div>' +
+    list.map((s) => {
+      const id = s.id || s.created_at;
+      const label = labelFor(s);
+      const isActive = String(id) === String(currentId);
+      const isSprint = (s.category || "").toLowerCase().startsWith("sprint");
+      const accent = isSprint ? "#f59e0b" : "#ef4444";
+      return `<button type="button" data-sid="${id}" style="padding:8px 14px;border-radius:8px;border:1px solid ${isActive ? accent : "rgba(255,255,255,0.15)"};background:${isActive ? "rgba(239,68,68,0.15)" : "rgba(255,255,255,0.03)"};color:#fff;font-weight:700;font-size:0.85rem;cursor:pointer">${label}</button>`;
+    }).join("");
+  picker.querySelectorAll("button[data-sid]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const sid = btn.getAttribute("data-sid");
+      const next = list.find((s) => String(s.id || s.created_at) === String(sid));
+      if (next) {
+        currentData = next;
+        try { renderContent(); } catch (e) { console.warn(e); }
+        _embedRenderPracticePicker();
+      }
+    });
+  });
 }
 if (EMBED_SEASON) currentSeason = Number(EMBED_SEASON) || 1;
 
@@ -130,6 +351,22 @@ const trackToFlag = {
   "abu dhabi": "🇦🇪",
 };
 
+// Full race lap counts per track (100 % race distance) matching the F1 26 game calendar.
+const TRACK_RACE_LAPS = {
+  melbourne: 58, shanghai: 56, suzuka: 53, sakhir: 57, jeddah: 50, miami: 57,
+  montreal: 70, monaco: 78, catalunya: 66, austria: 71, austria_reverse: 71,
+  silverstone: 52, silverstone_reverse: 52, spa: 44, hungaroring: 70,
+  zandvoort_reverse: 72, zandvoort: 72, monza: 53,
+  madring: 57, madrid: 57, baku: 51, singapore: 61, texas: 56, austin: 56,
+  mexico: 71, mexico_city: 71, interlagos: 71, brazil: 71, sao_paulo: 71,
+  las_vegas: 50, vegas: 50, losail: 57, qatar: 57, abu_dhabi: 58,
+  yas_marina: 58, abu: 58, imola: 63, portimao: 66,
+};
+function getTrackRaceLength(trackName) {
+  const key = normalizeTrackName(trackName);
+  return TRACK_RACE_LAPS[key] || null;
+}
+
 // Initialize Supabase lazily so GitHub Pages stays interactive even if the CDN is slow/blocked.
 const SUPABASE_URL = "https://kbjjtiajugxvhoboqxwb.supabase.co";
 const SUPABASE_ANON_KEY =
@@ -167,10 +404,13 @@ const F1_2026_CALENDAR = [
   "montreal",
   "monaco",
   "catalunya",
+  "austria_reverse",
   "austria",
+  "silverstone_reverse",
   "silverstone",
   "spa",
   "hungaroring",
+  "zandvoort_reverse",
   "zandvoort",
   "monza",
   "madring",
@@ -196,10 +436,13 @@ const NOTES_TRACKS = [
   { key: "monaco", label: "Monaco", flag: "🇲🇨" },
   { key: "montreal", label: "Montreal", flag: "🇨🇦" },
   { key: "catalunya", label: "Catalunya", flag: "🇪🇸" },
+  { key: "austria_reverse", label: "Red Bull Ring (Reverse)", flag: "🇦🇹" },
   { key: "austria", label: "Red Bull Ring", flag: "🇦🇹" },
+  { key: "silverstone_reverse", label: "Silverstone (Reverse)", flag: "🇬🇧" },
   { key: "silverstone", label: "Silverstone", flag: "🇬🇧" },
   { key: "spa", label: "Spa", flag: "🇧🇪" },
   { key: "hungaroring", label: "Hungaroring", flag: "🇭🇺" },
+  { key: "zandvoort_reverse", label: "Zandvoort (Reverse)", flag: "🇳🇱" },
   { key: "zandvoort", label: "Zandvoort", flag: "🇳🇱" },
   { key: "monza", label: "Monza", flag: "🇮🇹" },
   { key: "madring", label: "Madring", flag: "🇪🇸" },
@@ -271,6 +514,16 @@ window.addEventListener("DOMContentLoaded", () => {
       renderQualiResults();
     });
     updateQualiGapButton();
+  }
+
+  const qualiSectorToggleBtn = document.getElementById("qualiSectorToggleBtn");
+  if (qualiSectorToggleBtn) {
+    qualiSectorToggleBtn.addEventListener("click", () => {
+      qualiTimeMode = qualiTimeMode === "lap" ? "sectors" : "lap";
+      updateQualiSectorButton();
+      renderQualiResults();
+    });
+    updateQualiSectorButton();
   }
   // Setup download template button
   const dlBtn = document.getElementById("downloadTemplateBtn");
@@ -438,16 +691,19 @@ async function handleDownloadQualiTemplate() {
 
 // Global track normalization for linking sessions
 function normalizeTrackName(name) {
-  const n = (name || "").toLowerCase().replace(/[\s-]/g, "_");
+  const n = (name || "").toLowerCase().trim().replace(/[\s-]/g, "_");
   if (n === "canada" || n === "canadian_grand_prix") return "montreal";
   if (n === "spain" || n === "spanish_grand_prix" || n === "barcelona") return "catalunya";
   if (n === "madrid" || n === "madring") return "madring";
   if (n === "vegas" || n === "lasvegas") return "las_vegas";
-  if (n === "interlagos") return "brazil";
+  if (n === "interlagos" || n === "sao_paulo" || n === "são_paulo") return "brazil";
   if (n === "mexico_city") return "mexico";
-  if (n === "abu") return "abu_dhabi";
+  if (n === "abu" || n === "yas_marina") return "abu_dhabi";
+  if (n === "austin") return "texas";
+  if (n === "qatar") return "losail";
   return n;
 }
+
 
 function getTrackCalendarIndex(trackName) {
   const index = F1_2026_CALENDAR.indexOf(normalizeTrackName(trackName));
@@ -523,6 +779,7 @@ async function handleFileUpload(e) {
         data = parsedLines;
       }
 
+      data = sanitizeDeep(data);
       const playerData = processTelemetryData(data);
       if (playerData && playerData.length > 0) {
         const session = playerData[0];
@@ -542,9 +799,8 @@ async function handleFileUpload(e) {
           if (trackGuess) session.track_name = trackGuess;
         }
 
-        if (category !== "Practice") {
-          sessionsToPersist.push(session);
-        }
+        // Persist every session, including Practice, so it shows up under the race weekend card
+        sessionsToPersist.push(session);
         lastProcessedSession = session;
       }
     } catch (err) {
@@ -554,20 +810,12 @@ async function handleFileUpload(e) {
 
   if (lastProcessedSession) {
     if (sessionsToPersist.length > 0) {
-      // Persist only non-Practice uploaded sessions to the database
       await saveSessions(sessionsToPersist);
-
-      // Set the view to the last uploaded session (finding the persisted version to get its database ID if applicable)
-      if (lastProcessedSession.category !== "Practice") {
-        currentData =
-          allSessions.find(
-            (s) => s.session_date === lastProcessedSession.created_at,
-          ) || lastProcessedSession;
-      } else {
-        currentData = lastProcessedSession;
-      }
+      currentData =
+        allSessions.find(
+          (s) => s.session_date === lastProcessedSession.created_at,
+        ) || lastProcessedSession;
     } else {
-      // Practice sessions are treated as temporary previews and not saved to the database
       currentData = lastProcessedSession;
     }
 
@@ -582,7 +830,9 @@ async function handleFileUpload(e) {
 }
 
 function showLoading(show) {
-  document.getElementById("loading").style.display = show ? "block" : "none";
+  const el = document.getElementById("loading");
+  el.style.display = show ? "block" : "none";
+  el.classList.toggle("active", !!show);
 }
 
 function showError(message) {
@@ -601,12 +851,34 @@ function buildRaceStory(rootData, playerName, playerTeam, classification_data) {
   const overtakeRecords = rootData["overtakes"]?.records || [];
   const speedTraps = rootData["speed-trap-records"] || [];
 
-  const playerPos = positionHistoryRoot.find((p) => p.name === playerName);
+  // Driver names arrive with inconsistent casing/whitespace depending on the
+  // career type (Driver career files often differ from My Team ones), so all
+  // player matching below is normalized.
+  const _norm = (v) => String(v == null ? "" : v).trim().toUpperCase();
+  const PLAYER = _norm(playerName);
+  const playerPos = positionHistoryRoot.find((p) => _norm(p.name) === PLAYER);
   if (!playerPos && !classification_data?.length) return null;
 
   const position_history = (playerPos?.["driver-position-history"] || [])
     .filter((p) => p["lap-number"] >= 0)
     .map((p) => ({ lap: p["lap-number"], position: p.position }));
+
+  // Fallback when the file has no per-lap position history for the player
+  // (seen in some Driver-career exports): derive a minimal start→finish line
+  // from the final classification so the Race Story still renders.
+  if (!position_history.length) {
+    const own = (classification_data || []).find(
+      (e) => _norm(e["driver-name"]) === PLAYER,
+    );
+    const fc = own?.["final-classification"] || {};
+    const finishPos = Number(fc.position || 0);
+    const lapsDone = Number(fc["num-laps"] || 0);
+    if (finishPos > 0) {
+      const gridPos = Number(fc["grid-position"] || finishPos);
+      position_history.push({ lap: 0, position: gridPos });
+      position_history.push({ lap: Math.max(1, lapsDone), position: finishPos });
+    }
+  }
 
   // Podium = top 3 by final-classification.position
   const podium = [];
@@ -619,9 +891,9 @@ function buildRaceStory(rootData, playerName, playerTeam, classification_data) {
     )
     .slice(0, 3);
   sortedClass.forEach((entry) => {
-    const name = String(entry["driver-name"] || "").toUpperCase();
-    if (name === playerName) return; // shown as the main line
-    const ph = positionHistoryRoot.find((p) => p.name === name);
+    const name = _norm(entry["driver-name"]);
+    if (name === PLAYER) return; // shown as the main line
+    const ph = positionHistoryRoot.find((p) => _norm(p.name) === name);
     if (!ph) return;
     podium.push({
       name,
@@ -634,10 +906,10 @@ function buildRaceStory(rootData, playerName, playerTeam, classification_data) {
   });
 
   const overtakes_made = overtakeRecords
-    .filter((o) => o["overtaking-driver-name"] === playerName)
+    .filter((o) => _norm(o["overtaking-driver-name"]) === PLAYER)
     .map((o) => ({ lap: o["overtaking-driver-lap"], opponent: o["overtaken-driver-name"] }));
   const overtakes_suffered = overtakeRecords
-    .filter((o) => o["overtaken-driver-name"] === playerName)
+    .filter((o) => _norm(o["overtaken-driver-name"]) === PLAYER)
     .map((o) => ({ lap: o["overtaken-driver-lap"], opponent: o["overtaking-driver-name"] }));
 
   // Pace delta vs field median (in ms)
@@ -648,7 +920,7 @@ function buildRaceStory(rootData, playerName, playerTeam, classification_data) {
     ),
   }));
   const playerLaps =
-    driverLapTimes.find((d) => d.name === playerName)?.laps || [];
+    driverLapTimes.find((d) => d.name === PLAYER)?.laps || [];
   const pace_delta = [];
   for (let i = 0; i < playerLaps.length; i++) {
     const playerMs = playerLaps[i];
@@ -795,9 +1067,55 @@ function buildRaceStory(rootData, playerName, playerTeam, classification_data) {
     })),
   })).filter((d) => d.name && d.laps.length);
 
+  // Starting grid — authoritative source is the race file itself (lap 0 of the
+  // position history), which already reflects any grid penalties applied.
+  const teamByName = {};
+  (classification_data || []).forEach((e) => {
+    const n = String(e["driver-name"] || "").toUpperCase();
+    if (n) teamByName[n] = e.team || "";
+  });
+
+  const lapZeroGrid = (positionHistoryRoot || [])
+    .map((p) => {
+      const hist = p["driver-position-history"] || [];
+      const zero = hist.find((h) => Number(h["lap-number"]) === 0);
+      const name = String(p.name || "").toUpperCase();
+      return {
+        position: Number(zero?.position || 0),
+        name,
+        team: p.team || teamByName[name] || "",
+      };
+    })
+    .filter((e) => e.name && e.position > 0);
+
+  const fcGrid = (classification_data || [])
+    .map((e) => {
+      const fc = e["final-classification"] || {};
+      const gp = Number(fc["grid-position"] || 0);
+      return {
+        position: gp,
+        name: String(e["driver-name"] || "").toUpperCase(),
+        team: e.team || "",
+      };
+    })
+    .filter((e) => e.name && e.position > 0);
+
+  const gridIsValid = (arr) =>
+    arr.length > 2 && new Set(arr.map((e) => e.position)).size === arr.length;
+
+  const chosenGrid = gridIsValid(lapZeroGrid)
+    ? lapZeroGrid
+    : gridIsValid(fcGrid)
+      ? fcGrid
+      : [];
+  const starting_grid = chosenGrid;
+  const validGrid = chosenGrid.length > 0;
+
+
   return {
     player_name: playerName,
     player_team: playerTeam,
+    starting_grid: validGrid ? starting_grid.sort((a, b) => a.position - b.position) : [],
     position_history,
     podium,
     overtakes_made,
@@ -919,6 +1237,7 @@ function processTelemetryData(data) {
                     e["final-classification"]?.["q3-time"] ||
                     e["q3-time"] ||
                     "",
+                  ...bestLapSectors(e),
                 }))
               : Array.isArray(tyre_stints_v2)
                 ? tyre_stints_v2.map((e) => ({
@@ -945,9 +1264,34 @@ function processTelemetryData(data) {
         const final_classification = obj["final-classification"] || {};
         const lap_data = obj["lap-data"] || {};
 
-        summary.starting_position =
-          final_classification["grid-position"] ?? null;
-        summary.finishing_position = lap_data["car-position"] ?? null;
+        // Qualifying/shootout packets do not carry a real grid, and
+        // lap-data.car-position is the *live* position at the moment the file
+        // was written (mid out-lap), which is why Q1/Q2/Q3 exports for the same
+        // weekend disagreed. Use the classification position instead.
+        const stypeLower = String(session_type || "").toLowerCase();
+        const isQualiLike =
+          stypeLower.includes("qualifying") ||
+          stypeLower.includes("quali") ||
+          stypeLower.includes("shootout");
+
+        if (isQualiLike) {
+          summary.starting_position = null;
+          summary.finishing_position =
+            final_classification["position"] ??
+            obj["track-position"] ??
+            lap_data["car-position"] ??
+            null;
+        } else {
+          summary.starting_position =
+            final_classification["grid-position"] ?? null;
+          // The lap packet is only a live position and can remain P3 after a
+          // retirement. Final classification is authoritative for results.
+          summary.finishing_position =
+            final_classification["position"] ??
+            lap_data["car-position"] ??
+            null;
+        }
+
 
         const lap0 = per_lap_info.find((l) => l["lap-number"] === 0);
         if (lap0) {
@@ -1079,22 +1423,35 @@ function processTelemetryData(data) {
   return results;
 }
 
+// Active career slot (driver-1..3 / team-1..3), chosen in the React shell.
+function getCareerSlot() {
+  try {
+    const v = window.localStorage.getItem("f1.career");
+    return /^(driver|team)-[123]$/.test(v || "") ? v : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function loadSavedSessions() {
   try {
     const db = getSupabaseClient();
     if (!db) return;
 
-    const { data: sessions, error } = await db
+    let query = db
       .from("telemetry_sessions")
       .select("*")
       .order("season", { ascending: true })
       .order("session_date", { ascending: true });
+    const _careerSlot = getCareerSlot();
+    if (_careerSlot) query = query.eq("career_slot", _careerSlot);
+    const { data: sessions, error } = await query;
 
     if (error) throw error;
 
     if (sessions && sessions.length) {
       // Map Supabase column names back to our app's object structure if they differ
-      const mappedSessions = sessions.map((s) => ({
+      const mappedSessions = sanitizeDeep(sessions).map((s) => ({
         ...s,
         starting_position: s.starting_pos,
         finishing_position: s.finishing_pos,
@@ -1116,7 +1473,7 @@ async function loadSavedSessions() {
 
       renderSavedSessions(allSessions);
 
-      if (!currentData) {
+      if (!currentData && !EMBED_VIEW) {
         // Prioritize showing a Race or Sprint as the default session
         currentData =
           mappedSessions.find(
@@ -1124,7 +1481,13 @@ async function loadSavedSessions() {
               s.category !== "Qualifying" && s.category !== "Sprint Shootout",
           ) || mappedSessions[0];
       }
-      renderContent();
+      // In embed mode never fall back to an unrelated track's session:
+      // the embed picks its own session (or shows an empty state).
+      if (EMBED_VIEW) _embedSelectSession();
+      else renderContent();
+
+      // Rebuild grids for races saved before grid capture existed.
+      backfillStartingGrids();
     }
   } catch (err) {
     console.error("Failed to fetch sessions from Supabase", err);
@@ -1136,6 +1499,16 @@ async function saveSessions(sessions) {
   const db = getSupabaseClient();
   if (!db) {
     throw new Error("Database connection is still loading. Please try again in a moment.");
+  }
+
+  // Attach the signed-in user so RLS accepts the insert.
+  let uid = null;
+  try {
+    const { data } = await db.auth.getUser();
+    uid = data?.user?.id || null;
+  } catch (e) { /* ignore */ }
+  if (!uid) {
+    throw new Error("You must be signed in to save sessions.");
   }
 
   const dataToInsert = sessions.map((session) => ({
@@ -1152,17 +1525,24 @@ async function saveSessions(sessions) {
     stints: session.stints,
     results: session.results,
     race_story: session.race_story || null,
+    user_id: uid,
+    career_slot: getCareerSlot(),
   }));
 
-  // Overwrite: delete any existing row matching driver+track+season+category, then insert
+  // Overwrite: delete any existing row matching driver+track+season+category (+ session_type for Practice/Quali) then insert
   for (const row of dataToInsert) {
     try {
-      await db.from("telemetry_sessions").delete().match({
+      const match = {
         driver_name: row.driver_name,
         track_name: row.track_name,
         season: row.season,
         category: row.category,
-      });
+      };
+      if (row.career_slot) match.career_slot = row.career_slot;
+      // For sessions with distinct session_type (P1/P2/P3, Q1/Q2/Q3), scope
+      // the overwrite so uploading FP2 doesn't wipe FP1 for the same weekend.
+      if (row.session_type) match.session_type = row.session_type;
+      await db.from("telemetry_sessions").delete().match(match);
     } catch (err) {
       console.warn("Pre-delete for overwrite failed (continuing):", err);
     }
@@ -1174,6 +1554,11 @@ async function saveSessions(sessions) {
 
   if (error) throw error;
   await loadSavedSessions();
+  try {
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: "f1-sessions-updated", reason: "upload" }, "*");
+    }
+  } catch (e) { /* ignore */ }
 }
 
 // Compute Win / Pole / Fastest-lap / Grand-slam flags for a saved session
@@ -1185,8 +1570,21 @@ function getSessionBadges(session) {
   const start = Number(session.starting_position ?? session.starting_pos);
   const rs = session.race_story || {};
   const playerName = (rs.player_name || session.driver_name || "").toUpperCase();
-  const win = finish === 1;
-  const pole = start === 1;
+  const playerResult = Array.isArray(rs.classification)
+    ? rs.classification.find((entry) => String(entry?.name || "").toUpperCase() === playerName)
+    : null;
+  const status = String(playerResult?.status || "").toUpperCase();
+  const dnf = !!playerResult && (
+    playerResult.is_dnf === true ||
+    (!!status && !/FINISHED|ACTIVE/.test(status))
+  );
+  const classifiedFinish = Number(playerResult?.position || finish);
+  const gridEntry = Array.isArray(rs.starting_grid)
+    ? rs.starting_grid.find((entry) => String(entry?.name || "").toUpperCase() === playerName)
+    : null;
+  const classifiedStart = Number(gridEntry?.position || start);
+  const win = !dnf && classifiedFinish === 1;
+  const pole = classifiedStart === 1;
   const fl =
     !!(rs.fastest_lap && (rs.fastest_lap.name || "").toUpperCase() === playerName);
   const ledEveryLap =
@@ -1194,7 +1592,7 @@ function getSessionBadges(session) {
     rs.position_history.length > 1 &&
     rs.position_history.filter((p) => p.lap >= 1).every((p) => p.position === 1);
   const grandSlam = cat === "race" && win && pole && fl && ledEveryLap;
-  return { win, pole, fl, grandSlam };
+  return { win, pole, fl, grandSlam, dnf };
 }
 
 async function clearSessionStatus(statusType) {
@@ -1262,6 +1660,11 @@ async function deleteSession(id, event) {
 
     if (error) throw error;
     await loadSavedSessions();
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: "f1-sessions-updated", reason: "delete" }, "*");
+      }
+    } catch (e) { /* ignore */ }
   } catch (err) {
     console.error("Error deleting session", err);
     alert("Failed to delete session.");
@@ -1339,59 +1742,169 @@ function renderSavedSessions(sessions) {
     </div>
   `;
 
-  // Build flat list of sessions for the active season, sorted newest first
-  const displaySessions = sessions
+  // Build one row per (track, weekend-bucket). Practice/Quali/Shootout
+  // fold into either the Race or Sprint row for the same track rather than
+  // appearing as their own entries.
+  const seasonAll = sessions
     .filter((s) => s.season === currentSeason)
-    .filter((s) => s.category !== "Qualifying" && s.category !== "Sprint Shootout")
     .slice()
     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-  const catLabel = (c) => {
-    if (!c) return "";
-    if (c === "Sprint Shootout") return "SHOOTOUT";
-    return c.toUpperCase();
+  const bucketFor = (c) => {
+    const x = (c || "").toLowerCase();
+    if (x === "sprint" || x === "sprint qualifying" || x === "sprint shootout") return "Sprint";
+    return "Race";
+  };
+  const priority = (c) => {
+    const x = (c || "").toLowerCase();
+    if (x === "race") return 0;
+    if (x === "sprint") return 1;
+    if (x === "qualifying") return 2;
+    if (x === "sprint shootout" || x === "sprint qualifying") return 3;
+    if (x === "practice") return 4;
+    return 5;
   };
 
-  displaySessions.forEach((session) => {
-    const trackKey = (session.track_name || "").toLowerCase();
+  const groups = new Map();
+  for (const s of seasonAll) {
+    const trackKey = (s.track_name || "").toLowerCase();
+    const bucket = bucketFor(s.category);
+    const key = `${trackKey}::${bucket}`;
+    let g = groups.get(key);
+    if (!g) {
+      g = { track_name: s.track_name, bucket, sessions: [], rep: s };
+      groups.set(key, g);
+    }
+    g.sessions.push(s);
+    if (priority(s.category) < priority(g.rep.category)) g.rep = s;
+    else if (
+      priority(s.category) === priority(g.rep.category) &&
+      new Date(s.created_at) > new Date(g.rep.created_at)
+    ) g.rep = s;
+  }
+
+  const displayGroups = Array.from(groups.values()).sort(
+    (a, b) => new Date(b.rep.created_at) - new Date(a.rep.created_at),
+  );
+
+  displayGroups.forEach((group) => {
+    const rep = group.rep;
+    const trackKey = (group.track_name || "").toLowerCase();
     const flag = trackToFlag[trackKey] || "🏁";
-    const weatherIcon = determineWeatherIcon(session);
-    const badges = getSessionBadges(session);
+    const weatherIcon = determineWeatherIcon(rep);
+    // Aggregate badges across every session in the weekend.
+    const agg = { grandSlam: false, win: false, pole: false, fl: false, dnf: false };
+    group.sessions.forEach((s) => {
+      const b = getSessionBadges(s);
+      if (b.grandSlam) agg.grandSlam = true;
+      if (b.win) agg.win = true;
+      if (b.pole) agg.pole = true;
+      if (b.fl) agg.fl = true;
+      if (b.dnf) agg.dnf = true;
+    });
     const badgeHtml = [
-      badges.grandSlam ? '<span class="result-tag mini tag-gs" title="Grand Slam">GS</span>' : "",
-      badges.win ? '<span class="result-tag mini tag-w" title="Win">W</span>' : "",
-      badges.pole ? '<span class="result-tag mini tag-p" title="Pole">P</span>' : "",
-      badges.fl ? '<span class="result-tag mini tag-fl" title="Fastest Lap">FL</span>' : "",
+      agg.grandSlam ? '<span class="result-tag mini tag-gs" title="Grand Slam">GS</span>' : "",
+      agg.win ? '<span class="result-tag mini tag-w" title="Win">W</span>' : "",
+      agg.fl ? '<span class="result-tag mini tag-fl" title="Fastest Lap">FL</span>' : "",
+      agg.dnf ? '<span class="result-tag mini tag-dnf" title="Did Not Finish">DNF</span>' : "",
     ].join("");
 
+    // Small chips showing which session types are uploaded for this weekend.
+    const seen = new Set();
+    const chips = group.sessions
+      .map((s) => {
+        const c = (s.category || "").toLowerCase();
+        let short = "";
+        if (c === "race") short = "R";
+        else if (c === "sprint") short = "S";
+        else if (c === "qualifying") short = "Q";
+        else if (c === "sprint shootout" || c === "sprint qualifying") short = "SQ";
+        else if (c === "practice") short = "P";
+        else short = (s.category || "?")[0];
+        if (seen.has(short)) return "";
+        seen.add(short);
+        return `<span class="sr-chip">${short}</span>`;
+      })
+      .join("");
+
+    const isActive =
+      currentData && group.sessions.some((s) => s.id === currentData.id);
+
     const card = document.createElement("div");
-    card.className = `session-row ${currentData && currentData.id === session.id ? "active" : ""}`;
+    card.className = `session-row ${isActive ? "active" : ""}`;
     card.innerHTML = `
-      <button class="delete-btn" title="Delete">🗑️</button>
+      <button class="delete-btn" title="Delete weekend">🗑️</button>
+      <button class="expand-btn" title="Show individual sessions">▾</button>
       <div class="sr-left">
         <div class="sr-track">
           <span class="flag-icon">${flag}</span>
-          <span class="sr-track-name">${session.track_name || "Unknown"}</span>
+          <span class="sr-track-name">${group.track_name || "Unknown"}</span>
         </div>
       </div>
       <div class="sr-right">
-        <span class="sr-cat">🏁 ${catLabel(session.category)}</span>
+        <span class="sr-cat">🏁 ${group.bucket.toUpperCase()}</span>
+        <span class="sr-chips">${chips}</span>
         <span class="sr-weather">${weatherIcon}</span>
         ${badgeHtml}
       </div>
     `;
 
-    card.querySelector(".delete-btn").onclick = (e) =>
-      deleteSession(session.id, e);
+    card.querySelector(".delete-btn").onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete every uploaded session for ${group.track_name} (${group.bucket})?`)) return;
+      for (const s of group.sessions) {
+        try { await deleteSession(s.id, e); } catch {}
+      }
+    };
+
+    // Per-session list with individual delete buttons.
+    const sublist = document.createElement("div");
+    sublist.className = "sr-sublist";
+    sublist.style.display = "none";
+    group.sessions
+      .slice()
+      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+      .forEach((s) => {
+        const row = document.createElement("div");
+        row.className = "sr-subrow" + (currentData && currentData.id === s.id ? " active" : "");
+        const label = s.session_type || s.category || "Session";
+        const when = s.created_at ? new Date(s.created_at).toLocaleDateString() : "";
+        row.innerHTML = `
+          <span class="sr-sub-label">${label}</span>
+          <span class="sr-sub-date">${when}</span>
+          <button class="sr-sub-del" title="Delete this session">🗑️</button>
+        `;
+        row.querySelector(".sr-sub-del").onclick = async (e) => {
+          e.stopPropagation();
+          await deleteSession(s.id, e);
+        };
+        row.addEventListener("click", (e) => {
+          if (e.target.closest(".sr-sub-del")) return;
+          currentData = s;
+          renderContent();
+          renderSavedSessions(allSessions);
+        });
+        sublist.appendChild(row);
+      });
+
+    card.querySelector(".expand-btn").onclick = (e) => {
+      e.stopPropagation();
+      const open = sublist.style.display === "none";
+      sublist.style.display = open ? "block" : "none";
+      e.currentTarget.textContent = open ? "▴" : "▾";
+    };
+
 
     card.addEventListener("click", (e) => {
-      if (e.target.closest(".delete-btn")) return;
-      currentData = session;
+      if (e.target.closest(".delete-btn") || e.target.closest(".expand-btn")) return;
+      currentData = rep;
       renderContent();
       renderSavedSessions(allSessions);
     });
 
     grid.appendChild(card);
+    grid.appendChild(sublist);
+
   });
 
 
@@ -1471,6 +1984,7 @@ function renderContent() {
   renderStints();
   renderTable();
   renderQualiResults();
+  renderStartingGrid();
   renderPracticeSection();
   renderRaceStory();
   renderCompareTab();
@@ -1505,7 +2019,7 @@ function renderPracticeSection() {
 
   const isEligibleForReview =
     currentData &&
-    (currentData.category === "Practice" || currentData.category === "Sprint");
+    (currentData.category === "Practice" || currentData.category === "Sprint" || currentData.category === "Race");
 
   if (!isEligibleForReview) {
     practiceStintSection.style.display = "none";
@@ -1722,6 +2236,13 @@ function renderPracticeTable() {
 }
 
 function renderFuelCalculatorUI(container) {
+  const fullLaps = currentData ? getTrackRaceLength(currentData.track_name) : null;
+  const pct25 = fullLaps ? Math.round(fullLaps * 0.25) : "";
+  const pct50 = fullLaps ? Math.round(fullLaps * 0.5) : "";
+  const presetInfo = fullLaps
+    ? `Race length presets for ${escapeHtml(currentData.track_name)} (≈${fullLaps} laps).`
+    : "Race length presets unavailable for this track.";
+
   container.innerHTML = `
     <div class="fuel-calc-item">
       <label>Avg Usage (Selected)</label>
@@ -1730,6 +2251,12 @@ function renderFuelCalculatorUI(container) {
     <div class="fuel-calc-item">
       <label>Target Laps</label>
       <input type="number" id="targetLapsInput" value="10" min="1" step="1">
+      <div class="fuel-calc-presets" data-has-laps="${fullLaps ? "1" : "0"}">
+        <button type="button" class="fuel-preset-btn" data-pct="25" data-laps="${pct25}">25 %</button>
+        <button type="button" class="fuel-preset-btn" data-pct="50" data-laps="${pct50}">50 %</button>
+        <button type="button" class="fuel-preset-btn fuel-preset-full" data-pct="100" data-laps="${fullLaps ?? ""}">Full</button>
+      </div>
+      <div class="fuel-preset-info">${presetInfo}</div>
     </div>
     <div class="fuel-calc-item">
       <label>Fuel Needed</label>
@@ -1741,6 +2268,15 @@ function renderFuelCalculatorUI(container) {
   `;
   const input = container.querySelector("#targetLapsInput");
   input.oninput = () => updateFuelCalculator();
+  container.querySelectorAll(".fuel-preset-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const laps = parseInt(btn.dataset.laps, 10);
+      if (Number.isFinite(laps) && laps > 0) {
+        input.value = String(laps);
+        updateFuelCalculator();
+      }
+    });
+  });
 }
 
 function updateFuelCalculator() {
@@ -1816,18 +2352,25 @@ function renderQualiResults() {
     tableDiv.className = "table-container";
 
     const weatherIcon = determineWeatherIcon(session);
+    const sectorMode = qualiTimeMode === "sectors";
     let tableHtml = `
       <h3 style="margin-bottom: 12px; color: var(--accent-red); font-size: 0.9rem; text-transform: uppercase; display:flex; align-items:center; gap:8px;">
         <span>⏱️ ${segmentTitle}</span>
         <span style="font-size:1.1rem;">${weatherIcon}</span>
       </h3>
-      <table>
+      <table class="quali-table${sectorMode ? " is-sectors" : ""}">
         <thead>
           <tr>
-            <th class="text-center" style="width: 60px;">Pos</th>
-            <th>Driver</th>
-            <th class="text-center">Best Lap</th>
-            <th class="text-center" style="width: 105px;">Gap</th>
+            <th class="text-center col-pos">P</th>
+            <th class="col-drv">Driver</th>
+            ${
+              sectorMode
+                ? `<th class="text-center col-sec">S1</th>
+                   <th class="text-center col-sec">S2</th>
+                   <th class="text-center col-sec">S3</th>`
+                : `<th class="text-center col-time">Best Lap</th>`
+            }
+            <th class="text-center col-gap">Gap</th>
           </tr>
         </thead>
         <tbody>`;
@@ -1840,6 +2383,23 @@ function renderQualiResults() {
       timeStringToSeconds(res.best_lap || res.q1 || res.q2 || res.q3 || ""),
     );
 
+    // Sector value in seconds ("28.412" or "1:02.118" both supported)
+    const secSeconds = (v) => {
+      if (v == null || v === "") return null;
+      const str = String(v);
+      const n = str.includes(":") ? timeStringToSeconds(str) : parseFloat(str);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
+    // Best (purple) sector times across the segment
+    const secBest = ["s1", "s2", "s3"].map((k) => {
+      const vals = sortedResults
+        .map((r) => secSeconds(r[k]))
+        .filter((v) => v != null);
+      return vals.length ? Math.min(...vals) : null;
+    });
+    const hasSectors = secBest.some((v) => v != null);
+
+
     sortedResults.forEach((res, idx) => {
       const isPlayer = res.name === currentData.driver_name;
       const pos = parseInt(res.position);
@@ -1850,8 +2410,8 @@ function renderQualiResults() {
       if (lowerTitle.includes("1") && pos > 16) isEliminated = true;
       else if (lowerTitle.includes("2") && pos > 10) isEliminated = true;
 
-      const team = teamsAssigned[res.name] || "Unassigned";
-      const teamColor = TEAM_COLORS[team] || "#444";
+      const team = teamForDriver(teamsAssigned, res.name) || "Unassigned";
+      const teamColor = teamColorFor(team);
 
       let rowStyle = "";
       if (isPlayer) {
@@ -1879,15 +2439,30 @@ function renderQualiResults() {
         }
       }
 
+      let timeCells;
+      if (sectorMode) {
+        timeCells = ["s1", "s2", "s3"]
+          .map((k, i) => {
+            const raw = res[k];
+            const val = secSeconds(raw);
+            if (val == null) return `<td class="text-center col-sec">-</td>`;
+            const isBest = secBest[i] != null && Math.abs(val - secBest[i]) < 0.0005;
+            return `<td class="text-center col-sec${isBest ? " sector-best" : ""}">${raw}</td>`;
+          })
+          .join("");
+      } else {
+        timeCells = `<td class="text-center col-time">${res.best_lap || res.q1 || "-"}</td>`;
+      }
+
       tableHtml += `
         <tr style="${rowStyle}">
-          <td class="text-center"><strong>${res.position || "-"}</strong></td>
-          <td style="border-left: 4px solid ${teamColor} !important; padding-left: 10px;">
+          <td class="text-center col-pos"><strong>${res.position || "-"}</strong></td>
+          <td class="col-drv" style="border-left: 4px solid ${teamColor} !important; padding-left: 10px;">
             <strong>${res.name}</strong><br>
             <span class="team-name-sub">${team}</span>
           </td>
-          <td class="text-center">${res.q1 || res.best_lap || "-"}</td>
-          <td class="text-center">${gapLabel}</td>
+          ${timeCells}
+          <td class="text-center col-gap">${gapLabel}</td>
         </tr>`;
     });
 
@@ -1906,6 +2481,12 @@ function updateQualiGapButton() {
   } else {
     btn.textContent = "Switch to Gap to Leader";
   }
+}
+
+function updateQualiSectorButton() {
+  const btn = document.getElementById("qualiSectorToggleBtn");
+  if (!btn) return;
+  btn.textContent = qualiTimeMode === "sectors" ? "Show Best Lap" : "Show Sectors";
 }
 
 function renderSessionInfo() {
@@ -3003,8 +3584,8 @@ function createChart(
         },
     grid: {
       color: isMobile
-        ? "rgba(255, 255, 255, 0.05)"
-        : "rgba(255, 255, 255, 0.1)",
+        ? "rgba(255, 255, 255, 0.12)"
+        : "rgba(255, 255, 255, 0.18)",
       ...(yAxisOverride.grid && typeof yAxisOverride.grid === "object"
         ? yAxisOverride.grid
         : {}),
@@ -3568,8 +4149,8 @@ function renderStandingsTable() {
 
   driverNames.forEach((name, idx) => {
     const d = driversMap[name];
-    const team = teamsAssigned[name] || "Unassigned";
-    const teamColor = TEAM_COLORS[team] || "#444";
+    const team = teamForDriver(teamsAssigned, name) || "Unassigned";
+    const teamColor = teamColorFor(team);
     const leaderClass = idx === 0 ? " is-leader" : "";
     html += `<tr class="standings-row${leaderClass}"><td class="col-rank rank-cell"><span class="rank-num">${idx + 1}</span></td><td class="col-driver driver-cell" style="--team-color:${teamColor};"><span class="driver-name">${name.toUpperCase()}</span><span class="driver-team">${team}</span></td>`;
 
@@ -3607,7 +4188,7 @@ function renderStandingsTable() {
   try {
     const teamAgg = {};
     driverNames.forEach((name) => {
-      const team = teamsAssigned[name] || "Unassigned";
+      const team = teamForDriver(teamsAssigned, name) || "Unassigned";
       if (!teamAgg[team]) teamAgg[team] = { points: 0, drivers: [] };
       teamAgg[team].points += driversMap[name].points || 0;
       teamAgg[team].drivers.push(name);
@@ -3621,7 +4202,7 @@ function renderStandingsTable() {
 
     teamNames.forEach((t, idx) => {
       const info = teamAgg[t];
-      const teamColor = TEAM_COLORS[t] || "#444";
+      const teamColor = teamColorFor(t);
       const gap =
         idx === 0
           ? "-"
@@ -3648,12 +4229,17 @@ function renderStandingsTable() {
   } catch (err) {
     console.error("Failed to render records", err);
   }
+  try {
+    renderSeasonProgress();
+  } catch (err) {
+    console.error("Failed to render season progress", err);
+  }
 }
 
 // ------- All-time Records / Stats -------
 function getTeamsForSeason(season) {
   try {
-    const raw = JSON.parse(localStorage.getItem("driverTeamsBySeason") || "{}");
+    const raw = sanitizeDeep(JSON.parse(localStorage.getItem("driverTeamsBySeason") || "{}"));
     return raw[String(season)] || {};
   } catch (_) {
     return {};
@@ -3757,7 +4343,7 @@ function renderRecordsTable() {
       driverAgg[name].fastest_laps += s.fastest_laps || 0;
       driverAgg[name].dnfs += s.dnfs || 0;
       driverAgg[name].seasons.add(season);
-      if (teams[name]) driverAgg[name].lastTeam = teams[name];
+      { const _t = teamForDriver(teams, name); if (_t) driverAgg[name].lastTeam = _t; }
     });
 
 
@@ -3772,7 +4358,7 @@ function renderRecordsTable() {
     // Constructor aggregates for this season
     const teamSeason = {};
     Object.entries(standings).forEach(([name, s]) => {
-      const team = teams[name] || "Unassigned";
+      const team = teamForDriver(teams, name) || "Unassigned";
       if (!teamSeason[team]) teamSeason[team] = { points: 0, wins: 0, podiums: 0 };
       teamSeason[team].points += s.points;
       teamSeason[team].wins += s.wins;
@@ -3810,8 +4396,8 @@ function renderRecordsTable() {
       const p1 = posFor(1);
       const p2 = posFor(2);
       if (!p1 || !p2) return;
-      const t1 = teams[p1.name] || null;
-      const t2 = teams[p2.name] || null;
+      const t1 = teamForDriver(teams, p1.name) || null;
+      const t2 = teamForDriver(teams, p2.name) || null;
       if (!t1 || !t2 || t1 !== t2 || t1 === "Unassigned") return;
       if (!teamAgg[t1]) {
         teamAgg[t1] = { points: 0, wins: 0, podiums: 0, one_twos: 0, front_row_lockouts: 0, titles: 0, seasons: new Set() };
@@ -3840,7 +4426,7 @@ function renderRecordsTable() {
     .sort((a, b) => b[1].points - a[1].points)
     .map(([name, d], idx) => {
       const team = d.lastTeam || "Unassigned";
-      const color = TEAM_COLORS[team] || "#444";
+      const color = teamColorFor(team);
       const titleBadge = d.titles > 0
         ? `<span class="rec-title-badge" title="${d.titles} championship${d.titles > 1 ? "s" : ""}">★ ${d.titles}</span>`
         : "";
@@ -3865,7 +4451,7 @@ function renderRecordsTable() {
   const teamRows = Object.entries(teamAgg)
     .sort((a, b) => b[1].points - a[1].points)
     .map(([team, t], idx) => {
-      const color = TEAM_COLORS[team] || "#444";
+      const color = teamColorFor(team);
       const titleBadge = t.titles > 0
         ? `<span class="rec-title-badge" title="${t.titles} constructor title${t.titles > 1 ? "s" : ""}">★ ${t.titles}</span>`
         : "";
@@ -3891,8 +4477,8 @@ function renderRecordsTable() {
       const dChamp = driverChampions[season] || "—";
       const cChamp = constructorChampions[season] || "—";
       const isCurrent = season === currentMaxSeason;
-      const dColor = TEAM_COLORS[(getTeamsForSeason(season)[dChamp]) || ""] || "#444";
-      const cColor = TEAM_COLORS[cChamp] || "#444";
+      const dColor = teamColorFor(getTeamsForSeason(season)[dChamp] || "");
+      const cColor = teamColorFor(cChamp);
       return `<tr>
         <td class="rec-season">S${season}${isCurrent ? '<span class="rec-current">live</span>' : ""}</td>
         <td><span class="rec-champ-dot" style="background:${dColor};"></span>${dChamp.toUpperCase()}</td>
@@ -3982,7 +4568,7 @@ function renderRecordsTable() {
 // Driver team assignment helpers
 function getDriverTeams() {
   try {
-    const raw = JSON.parse(localStorage.getItem("driverTeamsBySeason") || "{}");
+    const raw = sanitizeDeep(JSON.parse(localStorage.getItem("driverTeamsBySeason") || "{}"));
     return raw[String(currentSeason)] || {};
   } catch (err) {
     return {};
@@ -4049,7 +4635,7 @@ function renderDriverAssignments(driverNames) {
 
   // Build cards
   driverNames.forEach((name) => {
-    const teamVal = teams[name] || "";
+    const teamVal = teamForDriver(teams, name) || "";
     const card = document.createElement("div");
     card.className = "driver-card";
     card.setAttribute("data-driver", name);
@@ -4213,10 +4799,14 @@ async function saveDriverTeamsToDB(obj) {
     throw new Error("Database connection is still loading. Please try again in a moment.");
   }
 
+  const { data: userData } = await db.auth.getUser();
+  const uid = userData?.user?.id;
+  if (!uid) throw new Error("You must be signed in to save.");
   const rows = Object.entries(obj).map(([driver, team]) => ({
     season: currentSeason,
-    driver_name: driver,
-    team: team,
+    driver_name: sanitizeText(driver),
+    team: sanitizeText(team),
+    user_id: uid,
   }));
 
   // Upsert rows using season + driver_name as unique constraint
@@ -4236,7 +4826,7 @@ async function loadDriverTeamsFromDB(season) {
     .eq("season", season);
   if (error) throw error;
   const map = {};
-  (data || []).forEach((r) => (map[r.driver_name] = r.team));
+  (data || []).forEach((r) => (map[sanitizeText(r.driver_name)] = sanitizeText(r.team)));
   return map;
 }
 
@@ -4320,14 +4910,33 @@ async function saveTrackNote(trackKey, notes) {
   }
   setNotesStatus("Saving…");
   try {
-    const { error } = await client
+    const { data: userData } = await client.auth.getUser();
+    const uid = userData?.user?.id;
+    if (!uid) { setNotesStatus("Sign in to save notes", true); return; }
+    // Do NOT upsert on track_key: that conflict target is global, so with RLS
+    // a row belonging to another user (or a missing unique index) makes the
+    // write silently fail. Look the row up per user, then update or insert.
+    const { data: existing, error: findErr } = await client
       .from("track_notes")
-      .upsert({ track_key: trackKey, notes, updated_at: new Date().toISOString() }, { onConflict: "track_key" });
+      .select("id")
+      .eq("track_key", trackKey)
+      .eq("user_id", uid)
+      .maybeSingle();
+    if (findErr) {
+      console.error("track_notes lookup failed", findErr);
+      setNotesStatus("Save failed: " + (findErr.message || "unknown"), true);
+      return;
+    }
+    const payload = { track_key: trackKey, notes, updated_at: new Date().toISOString(), user_id: uid };
+    const { error } = existing?.id
+      ? await client.from("track_notes").update(payload).eq("id", existing.id)
+      : await client.from("track_notes").insert(payload);
     if (error) {
       console.error("track_notes save failed", error);
       setNotesStatus("Save failed: " + (error.message || "unknown"), true);
       return;
     }
+
     trackNotesCache[trackKey] = notes;
     setNotesStatus("Saved ✓");
     setTimeout(() => setNotesStatus(""), 1500);
@@ -4522,9 +5131,48 @@ function normalizeTeamName(t) {
   return s.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Alias table keyed by a squashed lowercase form so odd casings
+// ("MCLAREN", "mclaren_2026", "Red_Bull") all resolve to the right colour.
+const TEAM_COLOR_ALIASES = {
+  mclaren: "#f58020",
+  mercedes: "#27f4d2",
+  ferrari: "#f91536",
+  scuderiaferrari: "#f91536",
+  redbull: "#3671c6",
+  redbullracing: "#3671c6",
+  oracleredbullracing: "#3671c6",
+  astonmartin: "#229971",
+  alpine: "#0093cc",
+  bwtalpine: "#0093cc",
+  renault: "#0093cc",
+  williams: "#64c4ff",
+  racingbulls: "#6692ff",
+  visacashapprb: "#6692ff",
+  rb: "#6692ff",
+  alphatauri: "#6692ff",
+  tororosso: "#6692ff",
+  haas: "#b6babd",
+  haasf1team: "#b6babd",
+  audi: "#f04646",
+  sauber: "#f04646",
+  kicksauber: "#f04646",
+  alfaromeo: "#f04646",
+  cadillac: "#7c7c7c",
+  myteam: "#b81d89",
+};
+
+function teamColorKey(team) {
+  return String(team || "")
+    .replace(/['’]?\d{2,4}$/, "")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+}
+
 function teamColorFor(team) {
   const norm = normalizeTeamName(team);
-  return TEAM_COLORS[norm] || "#9aa0a6";
+  return (
+    TEAM_COLORS[norm] || TEAM_COLOR_ALIASES[teamColorKey(team)] || "#9aa0a6"
+  );
 }
 
 function renderRaceStory() {
@@ -4881,6 +5529,97 @@ function renderOvertakesChart(rs) {
   }
 }
 
+const STRAT_SLUG_ALIASES = {
+  las_vegas: "vegas",
+  lasvegas: "vegas",
+  yas_marina: "abu_dhabi",
+  abu: "abu_dhabi",
+  mexico_city: "mexico",
+  interlagos: "brazil",
+  sao_paulo: "brazil",
+  qatar: "losail",
+  austin: "texas",
+};
+function strategyTrackKey(name) {
+  const base = (name || "").toLowerCase().trim().replace(/\s+/g, "_");
+  return STRAT_SLUG_ALIASES[base] || base;
+}
+const STRAT_SHORT = { Soft: "S", Medium: "M", Hard: "H", Intermediate: "I", Wet: "W" };
+
+function currentStintsAsStrategy() {
+  return (currentData?.stints || []).map((s) => ({
+    compound: s["tyre-set-data"]?.["visual-tyre-compound"] || "Medium",
+    start_lap: Number(s["start-lap"]) || 1,
+    end_lap: Number(s["end-lap"]) || 1,
+  }));
+}
+
+async function loadTrackStrategies() {
+  const db = getSupabaseClient({ silent: true });
+  if (!db || !currentData) return [];
+  const { data, error } = await db
+    .from("tyre_strategies")
+    .select("*")
+    .eq("track_key", strategyTrackKey(currentData.track_name))
+    .order("created_at", { ascending: true });
+  if (error) {
+    console.warn("Could not load tyre strategies", error.message);
+    return [];
+  }
+  return data || [];
+}
+
+async function saveCurrentStintsAsStrategy() {
+  const db = getSupabaseClient();
+  if (!db) return alert("Database connection is still loading.");
+  const stints = currentStintsAsStrategy();
+  if (!stints.length) return;
+  const seq = stints.map((s) => STRAT_SHORT[s.compound] || "?").join("-");
+  const suggested = `${seq} (${currentData.category || "Race"})`;
+  const name = prompt("Name this tyre strategy:", suggested);
+  if (name === null) return;
+  let uid = null;
+  try {
+    const { data } = await db.auth.getUser();
+    uid = data?.user?.id || null;
+  } catch (e) { /* ignore */ }
+  if (!uid) return alert("Sign in to save strategies.");
+  const { error } = await db.from("tyre_strategies").insert({
+    user_id: uid,
+    career_slot: null,
+    track_key: strategyTrackKey(currentData.track_name),
+    season: null,
+    name: (name || "").trim() || suggested,
+    notes: "",
+    source: "race",
+    stints,
+  });
+  if (error) return alert("Could not save strategy: " + error.message);
+  renderStintStrip();
+}
+
+async function deleteTrackStrategy(id) {
+  const db = getSupabaseClient();
+  if (!db) return;
+  if (!confirm("Delete this strategy?")) return;
+  const { error } = await db.from("tyre_strategies").delete().eq("id", id);
+  if (error) return alert("Could not delete: " + error.message);
+  renderStintStrip();
+}
+
+async function renameTrackStrategy(id, current) {
+  const db = getSupabaseClient();
+  if (!db) return;
+  const name = prompt("Rename strategy:", current || "");
+  if (!name) return;
+  const { error } = await db
+    .from("tyre_strategies")
+    .update({ name: name.trim(), updated_at: new Date().toISOString() })
+    .eq("id", id);
+  if (error) return alert("Could not rename: " + error.message);
+  renderStintStrip();
+}
+
 function renderStintStrip() {
   const el = document.getElementById("stintStrip");
   if (!el) return;
@@ -4890,7 +5629,7 @@ function renderStintStrip() {
     return;
   }
   const totalLaps = stints[stints.length - 1]["end-lap"] || 1;
-  el.innerHTML = stints
+  const strip = stints
     .map((s, i) => {
       const compound =
         s["tyre-set-data"]?.["visual-tyre-compound"] || "Medium";
@@ -4902,6 +5641,38 @@ function renderStintStrip() {
       </div>`;
     })
     .join("");
+
+  el.innerHTML =
+    `<div class="stint-strip-row">${strip}</div>` +
+    `<div class="strategy-actions">
+       <button type="button" class="strategy-add-btn" onclick="saveCurrentStintsAsStrategy()">+ Add as tyre strategy</button>
+     </div>
+     <div class="strategy-list" id="strategyList"></div>`;
+
+  loadTrackStrategies().then((rows) => {
+    const list = document.getElementById("strategyList");
+    if (!list) return;
+    if (!rows.length) {
+      list.innerHTML = "";
+      return;
+    }
+    list.innerHTML = rows
+      .map((r) => {
+        const parts = (r.stints || [])
+          .map(
+            (s) =>
+              `<span class="strategy-seg" style="background:${COMPOUND_FILL[s.compound] || "#888"};color:${s.compound === "Hard" || s.compound === "Medium" ? "#111" : "#fff"}">${STRAT_SHORT[s.compound] || "?"} ${s.start_lap}–${s.end_lap}</span>`,
+          )
+          .join("");
+        return `<div class="strategy-row">
+          <div class="strategy-segs">${parts}</div>
+          <span class="strategy-name">${r.name || ""}</span>
+          <button type="button" class="strategy-mini" title="Rename" onclick="renameTrackStrategy('${r.id}', ${JSON.stringify(r.name || "").replace(/"/g, "&quot;")})">✏️</button>
+          <button type="button" class="strategy-mini" title="Delete" onclick="deleteTrackStrategy('${r.id}')">×</button>
+        </div>`;
+      })
+      .join("");
+  });
 }
 
 function renderTopSpeedList(rs) {
@@ -5025,10 +5796,12 @@ function renderDamageSection() {
 
 function fmtLapMs(ms) {
   if (!ms || ms <= 0) return "—";
-  const m = Math.floor(ms / 60000);
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
   const s = ((ms % 60000) / 1000).toFixed(3).padStart(6, "0");
-  return `${m}:${s}`;
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
+
 
 function renderCompareTab() {
   const empty = document.getElementById("compareEmpty");
@@ -5089,12 +5862,24 @@ function renderCompareCharts(playerEntry, opponentName) {
   const avgDelta = validDeltas.length
     ? validDeltas.reduce((a, b) => a + b, 0) / validDeltas.length
     : 0;
-  const totalYou = youMs.filter((v) => v).reduce((a, b) => a + b, 0);
-  const totalOpp = oppMs.filter((v) => v).reduce((a, b) => a + b, 0);
+  // Only count laps where BOTH drivers have a valid time, so the totals are
+  // directly comparable and consistent with the average delta.
+  let totalYou = 0;
+  let totalOpp = 0;
+  let commonLaps = 0;
+  for (let i = 0; i < maxLaps; i++) {
+    if (youMs[i] && oppMs[i]) {
+      totalYou += youMs[i];
+      totalOpp += oppMs[i];
+      commonLaps++;
+    }
+  }
   const summary = document.getElementById("compareSummary");
   if (summary) {
-    summary.innerHTML = `Avg delta: <b style="color:${avgDelta < 0 ? "#2ecc71" : "#e10600"}">${avgDelta > 0 ? "+" : ""}${avgDelta.toFixed(3)}s</b> · Total: <b>${fmtLapMs(totalYou)}</b> vs <b>${fmtLapMs(totalOpp)}</b>`;
+    const diff = (totalYou - totalOpp) / 1000;
+    summary.innerHTML = `Avg delta: <b style="color:${avgDelta < 0 ? "#2ecc71" : "#e10600"}">${avgDelta > 0 ? "+" : ""}${avgDelta.toFixed(3)}s</b> · Total over ${commonLaps} common lap${commonLaps === 1 ? "" : "s"}: <b>${fmtLapMs(totalYou)}</b> vs <b>${fmtLapMs(totalOpp)}</b> (<b style="color:${diff < 0 ? "#2ecc71" : "#e10600"}">${diff > 0 ? "+" : ""}${diff.toFixed(3)}s</b>)`;
   }
+
   const thYou = document.getElementById("compareThYou");
   const thOpp = document.getElementById("compareThOpp");
   if (thYou) thYou.textContent = `You (${playerEntry.name})`;
@@ -5166,10 +5951,20 @@ function renderCompareCharts(playerEntry, opponentName) {
         maintainAspectRatio: false,
         interaction: { mode: "index", intersect: false },
         scales: {
-          y: { title: { display: true, text: "Lap time (s)" } },
+          y: {
+            title: { display: true, text: "Lap time (m:ss.mmm)" },
+            ticks: { callback: (v) => fmtLapMs(Number(v) * 1000) },
+          },
           x: { title: { display: true, text: "Lap" } },
         },
-        plugins: { legend: { position: "bottom" } },
+        plugins: {
+          legend: { position: "bottom" },
+          tooltip: {
+            callbacks: {
+              label: (c) => `${c.dataset.label}: ${fmtLapMs(Number(c.parsed.y) * 1000)}`,
+            },
+          },
+        },
       },
     });
   }
@@ -5253,7 +6048,7 @@ function renderPaceDeltaChart() {
             color: (ctx) =>
               ctx.tick.value === 0
                 ? "rgba(255,255,255,0.5)"
-                : "rgba(255,255,255,0.08)",
+                : "rgba(255,255,255,0.16)",
           },
         },
       },
@@ -5379,3 +6174,464 @@ function renderPaceDeltaChart() {
   });
 })();
 
+
+/* ---------------------------------------------------------------
+   Starting Grid
+   Builds the weekend's grid from (a) stored grid positions when the
+   telemetry carried them, or (b) the qualifying segments for the
+   weekend (Q3 → P1-10, Q2 → P11-16, Q1 → the rest).
+---------------------------------------------------------------- */
+function buildStartingGridData() {
+  if (!currentData) return [];
+  const teams = typeof getDriverTeams === "function" ? getDriverTeams() : {};
+  const currentTrack = normalizeTrackName(currentData.track_name);
+
+  // Prefer the race (or sprint) file of the same weekend — its lap-0 order is
+  // the real starting grid, penalties included.
+  const weekendRace = (allSessions || []).find(
+    (s) =>
+      normalizeTrackName(s.track_name) === currentTrack &&
+      s.season === currentData.season &&
+      (s.category === "Race" || s.category === "Sprint") &&
+      s.race_story &&
+      Array.isArray(s.race_story.starting_grid) &&
+      s.race_story.starting_grid.length,
+  );
+
+  const rs =
+    (currentData.race_story &&
+    Array.isArray(currentData.race_story.starting_grid) &&
+    currentData.race_story.starting_grid.length
+      ? currentData.race_story
+      : null) || weekendRace?.race_story;
+
+  if (rs && Array.isArray(rs.starting_grid) && rs.starting_grid.length) {
+    // Compare against the weekend's qualifying order. A driver is only marked
+    // as penalised when someone who qualified BEHIND them starts AHEAD of them
+    // — drivers who simply moved up because others dropped are not flagged.
+    const qualiPos = new Map();
+    gridFromQualiFor(weekendRace || currentData, teams).forEach((q) =>
+      qualiPos.set(q.name, q.position),
+    );
+
+    const entries = [...rs.starting_grid]
+      .filter((e) => e && e.position > 0 && e.name)
+      .sort((a, b) => a.position - b.position)
+      .map((e) => ({
+        position: Number(e.position),
+        name: String(e.name).toUpperCase(),
+        team: e.team || teamForDriver(teams, e.name) || "Unassigned",
+        time: e.lap_time_str || "",
+        source: "Race start (lap 0)",
+      }));
+
+    entries.forEach((e) => {
+      const qp = qualiPos.get(e.name);
+      e.penalty = !!(
+        qp &&
+        entries.some((o) => {
+          const oq = qualiPos.get(o.name);
+          return oq && oq > qp && o.position < e.position;
+        })
+      );
+    });
+
+    return entries;
+  }
+
+
+  // Fallback: rebuild from qualifying segments of the same weekend
+  return gridFromQualiFor(currentData, teams);
+}
+
+// Rebuild a grid for `session` from the qualifying (or sprint shootout)
+// telemetry saved for the same weekend.
+function gridFromQualiFor(session, teamsMap) {
+  if (!session) return [];
+  const teams =
+    teamsMap ||
+    (typeof getDriverTeams === "function" ? getDriverTeams() : {});
+  const isSprintish =
+    session.category === "Sprint" || session.category === "Sprint Shootout";
+  const targetCat = isSprintish ? "Sprint Shootout" : "Qualifying";
+  const currentNormalized = normalizeTrackName(session.track_name);
+  const qualiSessions = (allSessions || []).filter(
+    (s) =>
+      normalizeTrackName(s.track_name) === currentNormalized &&
+      s.season === session.season &&
+      s.category === targetCat &&
+      Array.isArray(s.results) &&
+      s.results.length,
+  );
+  if (!qualiSessions.length) return [];
+
+  const rank = (s) => {
+    const t = String(s.session_type || "").toLowerCase();
+    if (/3/.test(t)) return 3;
+    if (/2/.test(t)) return 2;
+    return 1;
+  };
+  // Highest segment first so it wins the top slots
+  const ordered = [...qualiSessions].sort((a, b) => rank(b) - rank(a));
+
+  const byPos = new Map();
+  const taken = new Set();
+  ordered.forEach((qs) => {
+    const label = qs.session_type || qs.category || "Qualifying";
+    [...qs.results]
+      .map((r) => ({ ...r, pos: parseInt(r.position) }))
+      .filter((r) => r.pos > 0 && r.name)
+      .sort((a, b) => a.pos - b.pos)
+      .forEach((r) => {
+        const name = String(r.name).toUpperCase();
+        if (taken.has(name)) return;
+        if (byPos.has(r.pos)) return;
+        taken.add(name);
+        byPos.set(r.pos, {
+          position: r.pos,
+          name,
+          team: teamForDriver(teams, r.name) || teamForDriver(teams, name) || "Unassigned",
+          time: r.best_lap && r.best_lap !== "N/A" ? r.best_lap : "",
+          source: label,
+        });
+      });
+  });
+
+  return Array.from(byPos.values()).sort((a, b) => a.position - b.position);
+}
+
+// One-shot backfill: older saved races were stored before starting grids were
+// captured. Rebuild those from the weekend's qualifying data and persist them
+// so every Grand Prix has a Starting Grid.
+let _gridBackfillDone = false;
+async function backfillStartingGrids() {
+  if (_gridBackfillDone) return;
+  _gridBackfillDone = true;
+  const db = typeof getSupabaseClient === "function" ? getSupabaseClient() : null;
+  const teams = typeof getDriverTeams === "function" ? getDriverTeams() : {};
+  let changed = 0;
+
+  for (const s of allSessions || []) {
+    if (s.category !== "Race" && s.category !== "Sprint") continue;
+    const rs = s.race_story;
+    if (!rs) continue;
+    if (Array.isArray(rs.starting_grid) && rs.starting_grid.length) continue;
+
+    const grid = gridFromQualiFor(s, teams)
+      .filter((e) => e.position > 0 && e.name)
+      .map((e) => ({ position: e.position, name: e.name, team: e.team }));
+    if (grid.length < 3) continue;
+
+    rs.starting_grid = grid;
+    changed++;
+    if (db && s.id) {
+      try {
+        await db
+          .from("telemetry_sessions")
+          .update({ race_story: rs })
+          .eq("id", s.id);
+      } catch (err) {
+        console.warn("grid backfill save failed", err);
+      }
+    }
+  }
+
+  if (changed) {
+    try {
+      renderStartingGrid();
+    } catch (_) {}
+  }
+}
+
+function renderStartingGrid() {
+  const section = document.getElementById("section-grid");
+  const container = document.getElementById("startingGridContainer");
+  if (!section || !container) return;
+
+  const rows = buildStartingGridData();
+  const playerName = String(currentData?.driver_name || "").toUpperCase();
+
+  if (!rows.length) {
+    container.innerHTML = `<div class="race-story-empty">No grid available for this weekend yet — upload the qualifying (or sprint shootout) telemetry to build it.</div>`;
+    return;
+  }
+
+  const sourceLabel = rows[0].source || "";
+  const tiles = rows
+    .map((r) => {
+      const color = teamColorFor(r.team) || "#444";
+      const isPlayer = playerName && r.name === playerName;
+      const side = r.position % 2 === 1 ? "left" : "right";
+      return `<div class="sg-slot sg-${side}${isPlayer ? " is-player" : ""}" style="--team-color:${color}">
+        <div class="sg-pos">P${r.position}</div>
+        <div class="sg-info">
+          <div class="sg-name">${r.name}${r.penalty ? `<span class="sg-pen" title="Grid penalty applied">PEN</span>` : ""}</div>
+          <div class="sg-team">${r.team}</div>
+        </div>
+        <div class="sg-time">${r.time || "—"}</div>
+      </div>`;
+    })
+    .join("");
+
+  container.innerHTML = `
+    <div class="sg-meta">
+      <span class="sg-chip">🚦 ${rows.length} cars</span>
+      ${sourceLabel ? `<span class="sg-chip">Source: ${sourceLabel}</span>` : ""}
+    </div>
+    <div class="sg-track">
+      <div class="sg-grid">${tiles}</div>
+      <div class="sg-startline">START / FINISH</div>
+    </div>`;
+}
+
+// ---------------------------------------------------------------
+// Season Progress: points + championship position across rounds
+// ---------------------------------------------------------------
+let progressScope = "drivers";
+const progressHidden = { drivers: new Set(), teams: new Set() };
+const progressBulkTouched = { drivers: false, teams: false };
+
+function progressBuildSeries() {
+  const scoring = allSessions
+    .filter(
+      (s) =>
+        s.season === currentSeason &&
+        ["race", "sprint"].includes((s.category || "").toLowerCase()),
+    )
+    .sort(sortSessionsByCalendar);
+  if (!scoring.length) return null;
+
+  const teams = getDriverTeams() || {};
+  const labels = [];
+  const driverPoints = {}; // name -> cumulative array
+  const driverTotals = {};
+
+  scoring.forEach((session, idx) => {
+    const code = (session.track_code || session.track_name || "")
+      .toString()
+      .slice(0, 3)
+      .toUpperCase();
+    const kind = (session.category || "").toLowerCase() === "sprint" ? "S" : "R";
+    labels.push(`R${idx + 1} ${code}${kind === "S" ? " (S)" : ""}`);
+
+    const dnfSet = new Set();
+    (session.race_story?.classification || []).forEach((e) => {
+      const isDNF = e.is_dnf || (e.status && !/FINISHED/i.test(e.status));
+      if (isDNF && e.name) dnfSet.add(String(e.name).toUpperCase());
+    });
+
+    (session.results || []).forEach((res) => {
+      const name = res.name;
+      if (!name) return;
+      if (!driverTotals[name]) {
+        driverTotals[name] = 0;
+        driverPoints[name] = new Array(idx).fill(0);
+      }
+      const pos = parseInt(res.position);
+      let pts = 0;
+      if (!dnfSet.has(String(name).toUpperCase())) {
+        pts =
+          kind === "S"
+            ? [0, 8, 7, 6, 5, 4, 3, 2, 1][pos] || 0
+            : [0, 25, 18, 15, 12, 10, 8, 6, 4, 2, 1][pos] || 0;
+      }
+      driverTotals[name] += pts;
+    });
+
+    Object.keys(driverTotals).forEach((name) => {
+      driverPoints[name] = driverPoints[name] || new Array(idx).fill(0);
+      while (driverPoints[name].length < idx) driverPoints[name].push(0);
+      driverPoints[name][idx] = driverTotals[name];
+    });
+  });
+
+  const rounds = labels.length;
+  Object.keys(driverPoints).forEach((n) => {
+    while (driverPoints[n].length < rounds)
+      driverPoints[n].push(driverPoints[n][driverPoints[n].length - 1] || 0);
+  });
+
+  // Team cumulative points
+  const teamPoints = {};
+  Object.keys(driverPoints).forEach((name) => {
+    const team = teamForDriver(teams, name) || "Unassigned";
+    if (!teamPoints[team]) teamPoints[team] = new Array(rounds).fill(0);
+    for (let i = 0; i < rounds; i++) teamPoints[team][i] += driverPoints[name][i];
+  });
+
+  const toPositions = (map) => {
+    const keys = Object.keys(map);
+    const out = {};
+    keys.forEach((k) => (out[k] = []));
+    for (let i = 0; i < rounds; i++) {
+      const ranked = keys
+        .slice()
+        .sort((a, b) => map[b][i] - map[a][i] || a.localeCompare(b));
+      ranked.forEach((k, idx) => out[k].push(idx + 1));
+    }
+    return out;
+  };
+
+  // Driver styling: team colour, second driver of the team dashed
+  const seenPerTeam = {};
+  const driverStyle = {};
+  Object.keys(driverPoints)
+    .sort((a, b) => driverPoints[b][rounds - 1] - driverPoints[a][rounds - 1])
+    .forEach((name) => {
+      const team = teamForDriver(teams, name) || "Unassigned";
+      seenPerTeam[team] = (seenPerTeam[team] || 0) + 1;
+      driverStyle[name] = {
+        color: teamColorFor(team),
+        dash: seenPerTeam[team] > 1 ? [6, 5] : [],
+      };
+    });
+
+  return {
+    labels,
+    drivers: {
+      points: driverPoints,
+      positions: toPositions(driverPoints),
+      style: driverStyle,
+    },
+    teams: {
+      points: teamPoints,
+      positions: toPositions(teamPoints),
+      style: Object.keys(teamPoints).reduce((acc, t) => {
+        acc[t] = { color: teamColorFor(t), dash: [] };
+        return acc;
+      }, {}),
+    },
+  };
+}
+
+function progressDatasets(scope, series, kind) {
+  const src = series[scope];
+  const map = kind === "points" ? src.points : src.positions;
+  const hidden = progressHidden[scope];
+  return Object.keys(map)
+    .sort((a, b) => src.points[b][series.labels.length - 1] - src.points[a][series.labels.length - 1])
+    .map((key) => ({
+      label: key,
+      data: map[key],
+      borderColor: src.style[key].color,
+      backgroundColor: src.style[key].color,
+      borderDash: src.style[key].dash,
+      borderWidth: 2,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+      tension: 0.15,
+      hidden: hidden.has(key),
+    }));
+}
+
+function renderSeasonProgress() {
+  const section = document.getElementById("section-progress");
+  if (!section) return;
+  const empty = document.getElementById("progressEmpty");
+  const content = document.getElementById("progressContent");
+  const series = progressBuildSeries();
+  if (!series) {
+    if (empty) empty.style.display = "block";
+    if (content) content.style.display = "none";
+    return;
+  }
+  if (empty) empty.style.display = "none";
+  if (content) content.style.display = "block";
+
+  section.querySelectorAll(".progress-scope").forEach((btn) => {
+    btn.classList.toggle("active", btn.dataset.scope === progressScope);
+    btn.onclick = () => {
+      progressScope = btn.dataset.scope;
+      renderSeasonProgress();
+    };
+  });
+
+  const scope = progressScope;
+  const src = series[scope];
+  const keys = Object.keys(src.points).sort(
+    (a, b) => src.points[b][series.labels.length - 1] - src.points[a][series.labels.length - 1],
+  );
+
+  // Default: all lines hidden until you explicitly choose who to display.
+  if (!progressBulkTouched[scope] && progressHidden[scope].size === 0 && keys.length > 0) {
+    keys.forEach((k) => progressHidden[scope].add(k));
+  }
+
+
+  const toggles = document.getElementById("progressToggles");
+  if (toggles) {
+    const bulk =
+      `<button type="button" class="progress-chip progress-chip-bulk" data-bulk="show">Show all</button>` +
+      `<button type="button" class="progress-chip progress-chip-bulk" data-bulk="hide">Hide all</button>`;
+    toggles.innerHTML = bulk + keys
+      .map((k) => {
+        const st = src.style[k];
+        const off = progressHidden[scope].has(k) ? " is-off" : "";
+        return `<button type="button" class="progress-chip${off}" data-key="${escapeHtml(k)}" style="--chip-color:${st.color}"><span class="progress-swatch" style="${st.dash.length ? "background:repeating-linear-gradient(90deg," + st.color + " 0 4px,transparent 4px 8px)" : "background:" + st.color}"></span>${escapeHtml(k)}</button>`;
+      })
+      .join("");
+    toggles.querySelectorAll(".progress-chip-bulk").forEach((btn) => {
+      btn.onclick = () => {
+        if (btn.dataset.bulk === "show") progressHidden[scope].clear();
+        else keys.forEach((k) => progressHidden[scope].add(k));
+        progressBulkTouched[scope] = true;
+        renderSeasonProgress();
+      };
+    });
+    toggles.querySelectorAll(".progress-chip[data-key]").forEach((chip) => {
+      chip.onclick = () => {
+        const key = chip.getAttribute("data-key");
+        const target = keys.find((k) => escapeHtml(k) === key) || key;
+        if (progressHidden[scope].has(target)) progressHidden[scope].delete(target);
+        else progressHidden[scope].add(target);
+        renderSeasonProgress();
+      };
+    });
+  }
+
+  const baseOpts = {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: "nearest", intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: {} },
+    },
+    scales: {
+      x: {
+        title: { display: true, text: "Round" },
+        ticks: { color: "#bbb", maxRotation: 60, minRotation: 0 },
+        grid: { color: "rgba(255,255,255,0.14)" },
+      },
+    },
+  };
+
+  const mk = (canvasId, kind) => {
+    const el = document.getElementById(canvasId);
+    if (!el) return;
+    if (charts[canvasId]) charts[canvasId].destroy();
+    const yScale =
+      kind === "points"
+        ? {
+            title: { display: true, text: "Points" },
+            beginAtZero: true,
+            ticks: { color: "#bbb" },
+            grid: { color: "rgba(255,255,255,0.14)" },
+          }
+        : {
+            title: { display: true, text: "Position" },
+            reverse: true,
+            min: 1,
+            ticks: { color: "#bbb", stepSize: 1, precision: 0 },
+            grid: { color: "rgba(255,255,255,0.14)" },
+          };
+    charts[canvasId] = new Chart(el.getContext("2d"), {
+      type: "line",
+      data: { labels: series.labels, datasets: progressDatasets(scope, series, kind) },
+      options: { ...baseOpts, scales: { ...baseOpts.scales, y: yScale } },
+    });
+  };
+
+  mk("progressPointsChart", "points");
+  mk("progressPositionChart", "position");
+}
