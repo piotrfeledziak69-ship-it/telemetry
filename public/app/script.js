@@ -2498,7 +2498,7 @@ function renderQualiResults() {
 
       const team =
         teamForDriver(teamsAssigned, res.name) ||
-        (res.team && String(res.team).trim()) ||
+        canonicalTeam(res.team) ||
         "Unassigned";
       const teamColor = teamColorFor(team);
 
@@ -6313,7 +6313,7 @@ function buildStartingGridData() {
       .map((e) => ({
         position: Number(e.position),
         name: String(e.name).toUpperCase(),
-        team: e.team || teamForDriver(teams, e.name) || "Unassigned",
+        team: canonicalTeam(e.team) || teamForDriver(teams, e.name) || "Unassigned",
         time: e.lap_time_str || "",
         source: "Race start (lap 0)",
       }));
