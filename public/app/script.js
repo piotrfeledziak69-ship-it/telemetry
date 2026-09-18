@@ -2340,6 +2340,32 @@ function renderQualiResults() {
   section.style.display = "block";
   bodyContainer.innerHTML = ""; // Clear old content
 
+  // Inline toolbar (the outer section header is hidden in embedded views)
+  const toolbar = document.createElement("div");
+  toolbar.className = "quali-inline-toolbar";
+  const gapBtn = document.createElement("button");
+  gapBtn.type = "button";
+  gapBtn.className = "btn-secondary quali-inline-btn";
+  gapBtn.textContent =
+    qualiGapMode === "leader" ? "Switch to Gap to Next" : "Switch to Gap to Leader";
+  gapBtn.addEventListener("click", () => {
+    qualiGapMode = qualiGapMode === "leader" ? "next" : "leader";
+    updateQualiGapButton();
+    renderQualiResults();
+  });
+  const secBtn = document.createElement("button");
+  secBtn.type = "button";
+  secBtn.className = "btn-secondary quali-inline-btn";
+  secBtn.textContent = qualiTimeMode === "sectors" ? "Show Best Lap" : "Show Sectors";
+  secBtn.addEventListener("click", () => {
+    qualiTimeMode = qualiTimeMode === "lap" ? "sectors" : "lap";
+    updateQualiSectorButton();
+    renderQualiResults();
+  });
+  toolbar.appendChild(gapBtn);
+  toolbar.appendChild(secBtn);
+  bodyContainer.appendChild(toolbar);
+
   const segmentsGridContainer = document.createElement("div");
   segmentsGridContainer.className = "quali-segments-grid";
   bodyContainer.appendChild(segmentsGridContainer);
