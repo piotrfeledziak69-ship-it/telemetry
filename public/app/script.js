@@ -79,7 +79,7 @@ function teamFromTelemetry(upperName) {
     const put = (n, t) => {
       if (!n || !t) return;
       const k = String(n).trim().toUpperCase();
-      const v = String(t).trim();
+      const v = canonicalTeam(t);
       if (!k || !v || v.toLowerCase() === "unassigned") return;
       if (!map[k]) map[k] = v;
     };
