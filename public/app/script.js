@@ -4339,6 +4339,14 @@ function getTeamsForSeason(season) {
   }
 }
 
+function sessionFingerprint(s) {
+  const sig = (s.results || [])
+    .map((r) => `${(r.name || "").toUpperCase()}:${r.position}`)
+    .sort()
+    .join("|");
+  return `${s.season}|${(s.track || "").toLowerCase()}|${(s.category || "").toLowerCase()}|${sig}`;
+}
+
 function computeSeasonStandings(season) {
   const drivers = {};
   const sessions = allSessions
@@ -4348,6 +4356,20 @@ function computeSeasonStandings(season) {
         ((s.category || "").toLowerCase() === "race" ||
           (s.category || "").toLowerCase() === "sprint"),
     );
+  // Drop exact duplicate sessions (same event re-uploaded with identical results)
+  const seenSessions = new Set();
+  const uniqueSessions = sessions.filter((s) => {
+    const fp = sessionFingerprint(s);
+    if (!sigNonEmpty(fp)) return true;
+    if (seenSessions.has(fp)) return false;
+    seenSessions.add(fp);
+    return true;
+  });
+  function sigNonEmpty(fp) {
+    return fp.split("|").slice(3).join("|").length > 0;
+  }
+  sessions.length = 0;
+  sessions.push(...uniqueSessions);
   sessions.forEach((session) => {
     const seen = new Set();
     const rsClass = session.race_story?.classification || [];
