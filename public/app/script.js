@@ -4394,7 +4394,7 @@ function computeSeasonStandings(season) {
           drivers[name].dnfs += 1;
         }
       }
-      if (cat === "race") {
+      if (cat === "race" && !seen.has(name)) {
         if (pos === 1) drivers[name].wins += 1;
         if (pos >= 1 && pos <= 3) drivers[name].podiums += 1;
       }
