@@ -4359,15 +4359,12 @@ function computeSeasonStandings(season) {
   // Drop exact duplicate sessions (same event re-uploaded with identical results)
   const seenSessions = new Set();
   const uniqueSessions = sessions.filter((s) => {
+    if (!s.results || s.results.length === 0) return true;
     const fp = sessionFingerprint(s);
-    if (!sigNonEmpty(fp)) return true;
     if (seenSessions.has(fp)) return false;
     seenSessions.add(fp);
     return true;
   });
-  function sigNonEmpty(fp) {
-    return fp.split("|").slice(3).join("|").length > 0;
-  }
   sessions.length = 0;
   sessions.push(...uniqueSessions);
   sessions.forEach((session) => {
