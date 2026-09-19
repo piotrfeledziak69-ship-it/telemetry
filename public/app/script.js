@@ -4393,10 +4393,10 @@ function computeSeasonStandings(season) {
         if (cat === "race" && (dnfNames.has(name) || !pos || pos <= 0)) {
           drivers[name].dnfs += 1;
         }
-      }
-      if (cat === "race" && !seen.has(name)) {
-        if (pos === 1) drivers[name].wins += 1;
-        if (pos >= 1 && pos <= 3) drivers[name].podiums += 1;
+        if (cat === "race") {
+          if (pos === 1) drivers[name].wins += 1;
+          if (pos >= 1 && pos <= 3) drivers[name].podiums += 1;
+        }
       }
     });
     // Fallback: include drivers from race_story classification not already
