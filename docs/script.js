@@ -3676,9 +3676,7 @@ function createChart(
             : {}),
         },
     grid: {
-      color: isMobile
-        ? "rgba(255, 255, 255, 0.12)"
-        : "rgba(255, 255, 255, 0.18)",
+      color: "rgba(255, 255, 255, 0.065)",
       ...(yAxisOverride.grid && typeof yAxisOverride.grid === "object"
         ? yAxisOverride.grid
         : {}),

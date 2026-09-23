@@ -1,5 +1,5 @@
-// Tyre strategies stored per track (shared across every season / session of
-// that track) and scoped to the signed-in user + active career slot.
+// Tyre strategies are stored per user + track and shared across every season,
+// session, and career slot for that track.
 
 import { supabase } from "./supabase";
 
@@ -118,7 +118,6 @@ export async function createStrategy(input: {
   if (!uid) throw new Error("Sign in to save strategies");
   const payload = {
     user_id: uid,
-    career_slot: null,
     track_key: input.track_key,
     season: null,
 

@@ -454,29 +454,25 @@ body.light-theme::before { display: none; }
 /* ---------- Charts ---------- */
 .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-bottom: 36px; }
 .chart-container {
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 22px;
+  background: #111114;
+  border: 1px solid rgba(255,255,255,0.045);
+  border-radius: 4px;
+  padding: 16px 18px 12px;
   position: relative;
   height: 440px;
-  box-shadow: var(--shadow-md);
+  box-shadow: none;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.chart-container:hover { border-color: var(--border-strong); }
+.chart-container:hover { border-color: rgba(255,255,255,0.10); }
 .chart-container.full-width { grid-column: 1 / -1; height: 560px; }
 .chart-title {
   font-weight: 700; font-size: 0.95em;
-  text-transform: uppercase; letter-spacing: 0.14em;
+  text-transform: none; letter-spacing: 0;
   color: var(--text);
   margin-bottom: 14px;
   display: flex; align-items: center; gap: 10px;
 }
-.chart-title::before {
-  content: ""; width: 8px; height: 8px; border-radius: 50%;
-  background: var(--f1-red);
-  box-shadow: 0 0 10px var(--f1-red);
-}
+.chart-title::before { display: none; }
 
 /* ---------- Tables ---------- */
 table {
