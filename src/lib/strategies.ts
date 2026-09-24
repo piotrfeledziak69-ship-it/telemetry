@@ -84,8 +84,30 @@ export function formatStrategy(stints: StrategyStint[]) {
     .join(" · ");
 }
 
+let sharedStrategyMigration: Promise<void> | null = null;
+
+async function migrateOwnedStrategiesToShared(): Promise<void> {
+  if (sharedStrategyMigration) return sharedStrategyMigration;
+  sharedStrategyMigration = (async () => {
+    const { data: userData } = await supabase.auth.getUser();
+    const uid = userData?.user?.id;
+    if (!uid) return;
+    const { error } = await supabase
+      .from("tyre_strategies")
+      .update({ career_slot: null })
+      .eq("user_id", uid)
+      .not("career_slot", "is", null);
+    if (error) throw error;
+  })().catch((error) => {
+    sharedStrategyMigration = null;
+    throw error;
+  });
+  return sharedStrategyMigration;
+}
+
 export async function listStrategies(trackKey: string): Promise<Strategy[]> {
   // Universal per track: shared across every season and career slot.
+  await migrateOwnedStrategiesToShared();
   const { data, error } = await supabase
     .from("tyre_strategies")
     .select("*")
@@ -118,10 +140,9 @@ export async function createStrategy(input: {
   if (!uid) throw new Error("Sign in to save strategies");
   const payload = {
     user_id: uid,
+    career_slot: null,
     track_key: input.track_key,
     season: null,
-
-
     name: input.name,
     notes: input.notes ?? "",
     source: input.source ?? "custom",
