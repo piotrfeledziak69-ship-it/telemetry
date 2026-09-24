@@ -5655,6 +5655,26 @@ function strategyTrackKey(name) {
   return STRAT_SLUG_ALIASES[base] || base;
 }
 const STRAT_SHORT = { Soft: "S", Medium: "M", Hard: "H", Intermediate: "I", Wet: "W" };
+let sharedStrategyMigration = null;
+
+async function migrateOwnedStrategiesToShared(db) {
+  if (sharedStrategyMigration) return sharedStrategyMigration;
+  sharedStrategyMigration = (async () => {
+    const { data } = await db.auth.getUser();
+    const uid = data?.user?.id;
+    if (!uid) return;
+    const { error } = await db
+      .from("tyre_strategies")
+      .update({ career_slot: null })
+      .eq("user_id", uid)
+      .not("career_slot", "is", null);
+    if (error) throw error;
+  })().catch((error) => {
+    sharedStrategyMigration = null;
+    throw error;
+  });
+  return sharedStrategyMigration;
+}
 
 function currentStintsAsStrategy() {
   return (currentData?.stints || []).map((s) => ({
@@ -5667,6 +5687,11 @@ function currentStintsAsStrategy() {
 async function loadTrackStrategies() {
   const db = getSupabaseClient({ silent: true });
   if (!db || !currentData) return [];
+  try {
+    await migrateOwnedStrategiesToShared(db);
+  } catch (error) {
+    console.warn("Could not share older tyre strategies", error?.message || error);
+  }
   const { data, error } = await db
     .from("tyre_strategies")
     .select("*")
