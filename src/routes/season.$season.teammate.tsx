@@ -1,6 +1,17 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { SUPABASE_URL, SUPABASE_ANON_KEY, titleCaseTrack, currentAccessToken } from "@/lib/f1-shell";
+import { getActiveCareer } from "@/lib/career";
+
+const COLLAPSED_KEY = "f1.h2h.collapsed";
+function loadCollapsed(): Set<string> {
+  try {
+    const arr = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]");
+    return new Set(Array.isArray(arr) ? arr.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
 import { ShellHeader, ShellPage } from "@/components/f1/ShellHeader";
 
 export const Route = createFileRoute("/season/$season/teammate")({
@@ -46,9 +57,11 @@ function TeammatePage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    const career = getActiveCareer();
+    const careerFilter = career ? `&career_slot=eq.${encodeURIComponent(career)}` : "";
     Promise.all([
       sbFetch<FullSession[]>(
-        `telemetry_sessions?select=id,season,driver_name,track_name,category,starting_pos,finishing_pos,results,session_date&season=eq.${seasonN}&order=session_date.asc`,
+        `telemetry_sessions?select=id,season,driver_name,track_name,category,starting_pos,finishing_pos,results,session_date&season=eq.${seasonN}${careerFilter}&order=session_date.asc`,
       ),
       sbFetch<Team[]>(`driver_teams?select=driver_name,team&season=eq.${seasonN}`),
     ])
@@ -215,11 +228,50 @@ function TeamH2H({
     (r) => r.raceA || r.raceB || r.qA || r.qB || r.sqA || r.sqB || r.sA || r.sB,
   );
   const aLeads = totals.ptsA >= totals.ptsB;
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    setCollapsed(loadCollapsed().has(team));
+  }, [team]);
+  const toggle = () => {
+    const set = loadCollapsed();
+    if (collapsed) set.delete(team);
+    else set.add(team);
+    try {
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]));
+    } catch {}
+    setCollapsed(!collapsed);
+  };
+
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex w-full items-center justify-between self-start rounded-lg border border-white/10 bg-white/[0.03] p-3 text-left hover:border-white/25"
+      >
+        <span className="text-xs font-bold uppercase tracking-widest text-white/60">{team}</span>
+        <span className="flex items-center gap-3 text-[11px] text-white/50">
+          <span className="font-mono">
+            {a.split(" ").pop()} {totals.ptsA} – {totals.ptsB} {b.split(" ").pop()}
+          </span>
+          <span aria-hidden>▸</span>
+        </span>
+      </button>
+    );
+  }
 
   return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+    <div className="self-start rounded-lg border border-white/10 bg-white/[0.03] p-4">
       <div className="mb-3 flex items-center justify-between">
-        <div className="text-xs font-bold uppercase tracking-widest text-white/60">{team}</div>
+        <button
+          type="button"
+          onClick={toggle}
+          className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-white/60 hover:text-white"
+          aria-label={`Collapse ${team}`}
+        >
+          <span aria-hidden>▾</span>
+          {team}
+        </button>
         <div className="text-[10px] text-white/40">{relevantRows.length} weekend{relevantRows.length === 1 ? "" : "s"}</div>
       </div>
       <div className="mb-3 grid grid-cols-2 gap-2">
