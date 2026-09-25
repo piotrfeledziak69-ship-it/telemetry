@@ -26,7 +26,7 @@ type FullSession = {
   category: string;
   starting_pos?: number | null;
   finishing_pos?: number | null;
-  results?: { name: string; position: any; best_lap?: string }[];
+  results?: { name: string; position: any; best_lap?: string; team?: string }[];
   session_date?: string;
 };
 type Team = { driver_name: string; team: string };
@@ -95,24 +95,35 @@ function TeammatePage() {
         .trim()
         .replace(/[\s\-_]*(?:19|20)?\d{2}\s*$/, "")
         .trim();
+    const key = (t: string) => canonicalTeam(t).toLowerCase();
+    const label: Record<string, string> = {};
     const g: Record<string, string[]> = {};
-    teams.forEach((t) => {
-      const team = canonicalTeam(t.team);
-      const name = String(t.driver_name).toUpperCase().trim();
+    const add = (teamRaw: string | undefined, nameRaw: string | undefined) => {
+      const team = canonicalTeam(String(teamRaw || ""));
+      const name = String(nameRaw || "").toUpperCase().trim();
       if (!team || !name) return;
-      g[team] = g[team] || [];
-      if (!g[team].includes(name)) g[team].push(name);
-    });
+      const k = key(team);
+      label[k] = label[k] || team;
+      // A driver belongs to one team: remove from any other team first
+      Object.keys(g).forEach((o) => {
+        if (o !== k) g[o] = g[o].filter((n) => n !== name);
+      });
+      g[k] = g[k] || [];
+      if (!g[k].includes(name)) g[k].push(name);
+    };
+    // Teams from the uploaded session results first, manual assignments override
+    sessions.forEach((s) => (s.results || []).forEach((r) => add(r.team, r.name)));
+    teams.forEach((t) => add(t.team, t.driver_name));
     return Object.entries(g)
       .filter(([, ds]) => ds.length >= 2)
       .map(([team, ds]) => {
         const sorted = [...ds].sort(
           (x, y) => (appearanceByDriver[y] || 0) - (appearanceByDriver[x] || 0),
         );
-        return { team, drivers: sorted.slice(0, 2) as [string, string] };
+        return { team: label[team] || team, drivers: sorted.slice(0, 2) as [string, string] };
       })
       .sort((a, b) => a.team.localeCompare(b.team));
-  }, [teams, appearanceByDriver]);
+  }, [teams, sessions, appearanceByDriver]);
 
 
   return (
@@ -133,7 +144,7 @@ function TeammatePage() {
           </div>
         )}
 
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid items-start gap-4 lg:grid-cols-2">
           {teamGroups.map(({ team, drivers }) => (
             <TeamH2H key={team} team={team} drivers={drivers} sessions={sessions} />
           ))}
@@ -251,8 +262,10 @@ function TeamH2H({
       >
         <span className="text-xs font-bold uppercase tracking-widest text-white/60">{team}</span>
         <span className="flex items-center gap-3 text-[11px] text-white/50">
-          <span className="font-mono">
-            {a.split(" ").pop()} {totals.ptsA} – {totals.ptsB} {b.split(" ").pop()}
+          <span className="flex items-center gap-2 font-mono">
+            <span className={aLeads ? "font-bold text-emerald-400" : ""}>{a.split(" ").pop()}</span>
+            <span className="rounded bg-white/5 px-2 py-0.5 text-white">{totals.ptsA} – {totals.ptsB}</span>
+            <span className={!aLeads ? "font-bold text-emerald-400" : ""}>{b.split(" ").pop()}</span>
           </span>
           <span aria-hidden>▸</span>
         </span>
