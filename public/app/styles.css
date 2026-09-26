@@ -1852,21 +1852,32 @@ body.light-theme #driver-assignments-container { background: #ffffff; }
 .session-row .expand-btn:hover { opacity: 1 !important; color: var(--f1-red); }
 
 .sr-sublist {
-  margin: 0 0 6px 14px;
-  border-left: 1px solid rgba(255,255,255,0.12);
-  padding-left: 8px;
+  margin: -1px 0 6px;
+  padding: 4px 6px 4px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  position: relative;
+}
+.sr-sublist::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  border-radius: 3px 0 0 3px;
+  background: rgba(225, 6, 0, 0.55);
 }
 .sr-subrow {
   display: grid;
   grid-template-columns: minmax(0,1fr) auto auto;
   align-items: center;
   gap: 8px;
-  padding: 5px 6px;
+  padding: 6px 8px;
   border-radius: 5px;
   cursor: pointer;
   font-size: 0.72rem;
 }
-.sr-subrow:hover { background: rgba(255,255,255,0.05); }
+.sr-subrow:hover { background: var(--surface-hi); }
 .sr-subrow.active { background: rgba(225,6,0,0.12); }
 .sr-sub-label {
   font-weight: 700; color: var(--text);
@@ -1880,8 +1891,12 @@ body.light-theme #driver-assignments-container { background: #ffffff; }
 }
 .sr-sub-del:hover { opacity: 1; color: var(--f1-red); }
 @media (max-width: 880px) {
-  .session-row .expand-btn, .sr-sub-del, .session-row .delete-btn { opacity: 0.9; }
-  .session-row .delete-btn, .session-row .expand-btn { width: 28px; height: 28px; }
+  .session-row { padding: 10px; }
+  .session-row .delete-btn,
+  .session-row .expand-btn,
+  .sr-sub-del { opacity: 0.75; }
+  .session-row .delete-btn,
+  .session-row .expand-btn { width: 28px; height: 28px; }
   .sr-subrow { padding: 9px 6px; font-size: 0.8rem; }
 }
 
