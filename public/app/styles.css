@@ -1742,70 +1742,114 @@ body.light-theme #driver-assignments-container { background: #ffffff; }
 }
 .session-date-header:first-child { padding-top: 0; }
 
-/* Session row (replaces card in sidebar) */
+/* Weekend card in the saved-sessions list */
 .session-row {
   position: relative;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 6px;
-  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   cursor: pointer;
+  overflow: hidden;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+.session-row::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: transparent;
   transition: background 0.15s;
 }
-.session-row:hover { background: rgba(255,255,255,0.04); }
+.session-row:hover {
+  background: var(--bg-4);
+  border-color: var(--border-strong);
+}
 .session-row.active {
-  background: rgba(225,6,0,0.10);
-  box-shadow: inset 2px 0 0 var(--f1-red);
+  background: var(--bg-4);
+  border-color: var(--border-red);
+  box-shadow: 0 0 0 1px rgba(225, 6, 0, 0.22), var(--shadow-red);
 }
-.session-row .sr-left { min-width: 0; }
-.session-row .sr-track {
-  display: flex; align-items: center; gap: 6px;
+.session-row.active::before { background: var(--f1-red); }
+
+.session-row .sr-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
+  padding-right: 36px;
 }
+.session-row .flag-icon { font-size: 1rem; flex: none; }
 .session-row .sr-track-name {
-  font-weight: 700; font-size: 0.85rem;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 0.92rem;
+  letter-spacing: 0.02em;
   color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.session-row .sr-time {
-  font-family: var(--font-mono, monospace);
-  font-size: 0.72rem; color: var(--text-mute);
-  margin-top: 2px;
-}
-.session-row .sr-right {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 0.7rem;
-  white-space: nowrap;
+  flex: 1; min-width: 0;
 }
 .session-row .sr-cat {
   font-family: var(--font-display);
-  font-weight: 700; letter-spacing: 0.1em;
-  color: #ff6a6a;
-  font-size: 0.65rem;
+  font-weight: 800;
+  font-size: 0.56rem;
+  letter-spacing: 0.14em;
+  color: #fff;
+  background: var(--f1-red);
+  padding: 3px 7px;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px -2px rgba(225, 6, 0, 0.6);
+  flex: none;
 }
-.session-row .sr-weather { font-size: 0.85em; }
-.session-row .delete-btn {
-  order: 0;
+.session-row .sr-cat.is-sprint {
+  color: #ffd166;
+  background: transparent;
+  border: 1px solid rgba(255, 209, 102, 0.55);
+  box-shadow: none;
+}
+.session-row .sr-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  padding-right: 26px;
+}
+.session-row .sr-count {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  color: var(--text-dim);
+  background: var(--surface-hi);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.session-row .sr-weather { font-size: 0.85em; margin-left: auto; }
+.session-row .sr-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.session-row .delete-btn,
+.session-row .expand-btn {
+  position: absolute;
   width: 24px; height: 24px; padding: 0;
   background: transparent; border: none; cursor: pointer;
-  font-size: 0.8em; line-height: 1;
-  opacity: 0.55; transition: opacity 0.15s;
   color: var(--text-mute);
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  z-index: 1;
 }
-.session-row:hover .delete-btn { opacity: 0.85; }
-.session-row .delete-btn:hover { opacity: 1; color: var(--f1-red); }
-.session-row .sr-left { order: 1; }
-.session-row .sr-right { order: 2; }
-.session-row .expand-btn {
-  order: 3;
-  width: 22px; height: 22px; padding: 0;
-  background: transparent; border: none; cursor: pointer;
-  font-size: 0.7em; line-height: 1;
-  color: var(--text-mute); opacity: 0.7;
-}
-.session-row .expand-btn:hover { opacity: 1; color: var(--f1-red); }
+.session-row .delete-btn { top: 5px; right: 5px; font-size: 0.75em; line-height: 1; }
+.session-row .expand-btn { bottom: 4px; right: 6px; font-size: 0.7em; line-height: 1; }
+.session-row:hover .delete-btn,
+.session-row:hover .expand-btn,
+.session-row.active .delete-btn,
+.session-row.active .expand-btn { opacity: 0.7; }
+.session-row .delete-btn:hover,
+.session-row .expand-btn:hover { opacity: 1 !important; color: var(--f1-red); }
 
 .sr-sublist {
   margin: 0 0 6px 14px;
