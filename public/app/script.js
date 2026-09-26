@@ -1890,23 +1890,28 @@ function renderSavedSessions(sessions) {
     const isActive =
       currentData && group.sessions.some((s) => s.id === currentData.id);
 
+    const trackLabel = (group.track_name || "Unknown")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+
     const card = document.createElement("div");
     card.className = `session-row ${isActive ? "active" : ""}`;
     card.innerHTML = `
-      <button class="delete-btn" title="Delete weekend">🗑️</button>
-      <button class="expand-btn" title="Show individual sessions">▾</button>
-      <div class="sr-left">
-        <div class="sr-track">
-          <span class="flag-icon">${flag}</span>
-          <span class="sr-track-name">${group.track_name || "Unknown"}</span>
-        </div>
+      <div class="sr-head">
+        <span class="flag-icon">${flag}</span>
+        <span class="sr-track-name">${trackLabel}</span>
+        <span class="sr-cat ${group.bucket === "Sprint" ? "is-sprint" : ""}">${group.bucket.toUpperCase()}</span>
       </div>
-      <div class="sr-right">
-        <span class="sr-cat">🏁 ${group.bucket.toUpperCase()}</span>
+      <div class="sr-meta">
+        <span class="sr-count">${group.sessions.length} SESSION${group.sessions.length === 1 ? "" : "S"}</span>
         <span class="sr-chips">${chips}</span>
         <span class="sr-weather">${weatherIcon}</span>
-        ${badgeHtml}
       </div>
+      ${badgeHtml ? `<div class="sr-tags">${badgeHtml}</div>` : ""}
+      <button class="delete-btn" title="Delete weekend">🗑️</button>
+      <button class="expand-btn" title="Show individual sessions">▾</button>
     `;
 
     card.querySelector(".delete-btn").onclick = async (e) => {
