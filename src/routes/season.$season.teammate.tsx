@@ -1,9 +1,25 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { SUPABASE_URL, SUPABASE_ANON_KEY, titleCaseTrack, currentAccessToken } from "@/lib/f1-shell";
+import { getActiveCareer } from "@/lib/career";
+
+const COLLAPSED_KEY = "f1.h2h.collapsed";
+function loadCollapsed(): Set<string> {
+  try {
+    const arr = JSON.parse(localStorage.getItem(COLLAPSED_KEY) || "[]");
+    return new Set(Array.isArray(arr) ? arr.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
 import { ShellHeader, ShellPage } from "@/components/f1/ShellHeader";
 
 export const Route = createFileRoute("/season/$season/teammate")({
+  head: ({ params }) => {
+    const title = `Season ${params.season} Teammate H2H · F1 Telemetry`;
+    const description = `Compare teammates' race and qualifying results throughout Season ${params.season}.`;
+    return { meta: [{ title }, { name: "description", content: description }, { property: "og:title", content: title }, { property: "og:description", content: description }, { property: "og:type", content: "website" }, { name: "twitter:card", content: "summary" }] };
+  },
   component: TeammatePage,
 });
 
@@ -15,7 +31,7 @@ type FullSession = {
   category: string;
   starting_pos?: number | null;
   finishing_pos?: number | null;
-  results?: { name: string; position: any; best_lap?: string }[];
+  results?: { name: string; position: any; best_lap?: string; team?: string }[];
   session_date?: string;
 };
 type Team = { driver_name: string; team: string };
@@ -46,9 +62,11 @@ function TeammatePage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    const career = getActiveCareer();
+    const careerFilter = career ? `&career_slot=eq.${encodeURIComponent(career)}` : "";
     Promise.all([
       sbFetch<FullSession[]>(
-        `telemetry_sessions?select=id,season,driver_name,track_name,category,starting_pos,finishing_pos,results,session_date&season=eq.${seasonN}&order=session_date.asc`,
+        `telemetry_sessions?select=id,season,driver_name,track_name,category,starting_pos,finishing_pos,results,session_date&season=eq.${seasonN}${careerFilter}&order=session_date.asc`,
       ),
       sbFetch<Team[]>(`driver_teams?select=driver_name,team&season=eq.${seasonN}`),
     ])
@@ -77,25 +95,43 @@ function TeammatePage() {
 
   // Group drivers by team, pick the 2 who actually race (most appearances)
   const teamGroups = useMemo(() => {
+    const canonicalTeam = (t: string) =>
+      String(t)
+        .trim()
+        .replace(/[\s\-_]*(?:19|20)?\d{2}\s*$/, "")
+        .trim();
+    const key = (t: string) => canonicalTeam(t).toLowerCase();
+    const label: Record<string, string> = {};
     const g: Record<string, string[]> = {};
-    teams.forEach((t) => {
-      const team = t.team;
-      const name = String(t.driver_name).toUpperCase().trim();
+    const add = (teamRaw: string | undefined, nameRaw: string | undefined) => {
+      const team = canonicalTeam(String(teamRaw || ""));
+      const name = String(nameRaw || "").toUpperCase().trim();
       if (!team || !name) return;
-      g[team] = g[team] || [];
-      if (!g[team].includes(name)) g[team].push(name);
-    });
+      const k = key(team);
+      label[k] = label[k] || team;
+      // A driver belongs to one team: remove from any other team first
+      Object.keys(g).forEach((o) => {
+        if (o !== k) g[o] = g[o].filter((n) => n !== name);
+      });
+      g[k] = g[k] || [];
+      if (!g[k].includes(name)) g[k].push(name);
+    };
+    // Teams from the uploaded session results first, manual assignments override
+    sessions.forEach((s) => (s.results || []).forEach((r) => add(r.team, r.name)));
+    teams.forEach((t) => add(t.team, t.driver_name));
     return Object.entries(g)
       .filter(([, ds]) => ds.length >= 2)
       .map(([team, ds]) => {
         const sorted = [...ds].sort(
           (x, y) => (appearanceByDriver[y] || 0) - (appearanceByDriver[x] || 0),
         );
-        return { team, drivers: sorted.slice(0, 2) as [string, string] };
+        return { team: label[team] || team, drivers: sorted.slice(0, 2) as [string, string] };
       })
       .sort((a, b) => a.team.localeCompare(b.team));
-  }, [teams, appearanceByDriver]);
+  }, [teams, sessions, appearanceByDriver]);
 
+  const teamSplit = Math.ceil(teamGroups.length / 2);
+  const teamColumns = [teamGroups.slice(0, teamSplit), teamGroups.slice(teamSplit)];
 
   return (
     <>
@@ -115,9 +151,13 @@ function TeammatePage() {
           </div>
         )}
 
-        <div className="grid gap-6 lg:grid-cols-2">
-          {teamGroups.map(({ team, drivers }) => (
-            <TeamH2H key={team} team={team} drivers={drivers} sessions={sessions} />
+        <div className="grid items-start gap-3 lg:grid-cols-2">
+          {teamColumns.map((column, index) => (
+            <div key={index} className="flex min-w-0 flex-col gap-3">
+              {column.map(({ team, drivers }) => (
+                <TeamH2H key={team} team={team} drivers={drivers} sessions={sessions} />
+              ))}
+            </div>
           ))}
         </div>
 
@@ -210,18 +250,56 @@ function TeamH2H({
     (r) => r.raceA || r.raceB || r.qA || r.qB || r.sqA || r.sqB || r.sA || r.sB,
   );
   const aLeads = totals.ptsA >= totals.ptsB;
+  const [collapsed, setCollapsed] = useState(() => loadCollapsed().has(team));
+  const toggle = () => {
+    const set = loadCollapsed();
+    if (collapsed) set.delete(team);
+    else set.add(team);
+    try {
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...set]));
+    } catch {}
+    setCollapsed(!collapsed);
+  };
+
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex w-full items-center justify-between self-start rounded-md border border-white/[0.06] bg-[#111114] px-2.5 py-2 text-left hover:border-white/15"
+      >
+        <span className="text-xs font-bold uppercase tracking-widest text-white/60">{team}</span>
+        <span className="flex items-center gap-3 text-[11px] text-white/50">
+          <span className="flex items-center gap-2 font-mono">
+            <span className={aLeads ? "font-bold text-emerald-400" : ""}>{a.split(" ").pop()}</span>
+            <span className="font-semibold text-white/80">{totals.ptsA} – {totals.ptsB}</span>
+            <span className={!aLeads ? "font-bold text-emerald-400" : ""}>{b.split(" ").pop()}</span>
+          </span>
+          <span aria-hidden>▸</span>
+        </span>
+      </button>
+    );
+  }
 
   return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <div className="text-xs font-bold uppercase tracking-widest text-white/60">{team}</div>
+    <div className="self-start rounded-md border border-white/[0.06] bg-[#111114] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={toggle}
+          className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-white/60 hover:text-white"
+          aria-label={`Collapse ${team}`}
+        >
+          <span aria-hidden>▾</span>
+          {team}
+        </button>
         <div className="text-[10px] text-white/40">{relevantRows.length} weekend{relevantRows.length === 1 ? "" : "s"}</div>
       </div>
-      <div className="mb-3 grid grid-cols-2 gap-2">
+      <div className="mb-2 grid grid-cols-2 gap-1.5">
         <DriverBlock name={a} pts={totals.ptsA} good={aLeads} />
         <DriverBlock name={b} pts={totals.ptsB} good={!aLeads} />
       </div>
-      <div className="mb-3 grid grid-cols-4 gap-2 text-center text-[11px] uppercase tracking-widest text-white/50">
+      <div className="mb-2 grid grid-cols-4 gap-1.5 text-center text-[10px] uppercase tracking-widest text-white/50">
         <div>
           <div>Quali</div>
           <div className="mt-0.5 font-mono text-sm text-white">{totals.qA}–{totals.qB}</div>
@@ -271,7 +349,7 @@ function TeamH2H({
 
 function DriverBlock({ name, pts, good }: { name: string; pts: number; good?: boolean }) {
   return (
-    <div className={"rounded-md border p-2 " + (good ? "border-emerald-500/40 bg-emerald-500/5" : "border-white/10 bg-white/[0.02]")}>
+    <div className={"rounded border p-1.5 " + (good ? "border-emerald-500/25 bg-emerald-500/[0.035]" : "border-white/[0.05] bg-white/[0.015]")}>
       <div className="truncate text-sm font-black">{name}</div>
       <div className={"mt-0.5 text-xs font-semibold " + (good ? "text-emerald-400" : "text-white/60")}>{pts} pts</div>
     </div>

@@ -6,6 +6,7 @@ import {
   useRouter,
   HeadContent,
   Scripts,
+  type ErrorComponentProps,
 } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 
@@ -34,7 +35,7 @@ function NotFoundComponent() {
   );
 }
 
-function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
+function ErrorComponent({ error, reset }: ErrorComponentProps) {
   console.error(error);
   const router = useRouter();
   useEffect(() => {
@@ -142,7 +143,7 @@ function AuthGate({ children }: { children: ReactNode }) {
     return () => { active = false; };
   }, [router]);
 
-  if (!ready) return <div className="flex min-h-screen items-center justify-center bg-[#0a0a0f] text-white/60 text-sm">Loading…</div>;
+  if (!ready) return <div className="flex min-h-screen items-center justify-center bg-background text-sm text-muted-foreground">Loading…</div>;
   const path = typeof window !== "undefined" ? window.location.pathname : "";
   if (!authed && path !== "/auth") {
     if (typeof window !== "undefined") window.location.replace("/auth");
