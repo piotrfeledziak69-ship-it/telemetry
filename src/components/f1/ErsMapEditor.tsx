@@ -9,6 +9,7 @@ import {
   coverage, ersKeys, isValidSegment, lapOrder, nudge, pointAtProgress, projectOnLine, segmentSpan, sliceLine,
   type ErsColor, type ErsMode, type ErsSegment, type ErsSlotMeta,
 } from "@/lib/ers-map";
+import { exportDeviceRacingLines, resolveRacingLine } from "@/lib/racing-lines";
 
 // Suggested swatches only — the user names every colour themselves.
 const SWATCHES = ["#22c55e", "#06b6d4", "#3b82f6", "#a855f7", "#ef4444", "#f59e0b", "#eab308", "#f8fafc"];
@@ -28,10 +29,16 @@ function readJson<T>(key: string, fallback: T): T {
 }
 
 function loadLine(track: string): Point[] {
-  const fallback = trackSlug(track) === "zandvoort" ? ZANDVOORT_LINE : [];
-  const saved = readJson<Point[] | null>(`f1.quali.line.v1.${trackSlug(track)}`, null);
-  if (Array.isArray(saved) && saved.length >= 3 && saved.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))) return saved;
-  return fallback;
+  return resolveRacingLine(track, localStorage, trackSlug(track) === "zandvoort" ? ZANDVOORT_LINE : []);
+}
+
+function exportAllLines() {
+  const blob = new Blob([JSON.stringify(exportDeviceRacingLines(localStorage), null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "racing-lines.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 function loadSlots(slug: string, mode: ErsMode): ErsSlotMeta[] {
@@ -436,6 +443,7 @@ export function ErsMapEditor({ season, track, cat }: { season: number; track: st
             <Button variant="outline" size="sm" className="flex-1" onClick={() => fileRef.current?.click()}><Upload />Import</Button>
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) importMaps(f); e.target.value = ""; }} />
           </div>
+          <Button variant="outline" size="sm" className="w-full" onClick={exportAllLines}><Download />Export All Tracks (racing lines)</Button>
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         </aside>
       </div>

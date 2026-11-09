@@ -2,7 +2,7 @@
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./f1-shell";
 
 // Tried in order; demand spikes return 503, so fall through to the next one.
-const MODELS = ["gemini-flash-lite-latest", "gemini-flash-latest"];
+const MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash"];
 
 /** Confirms the bearer token belongs to a signed-in user of the app. */
 export async function verifyUser(authHeader: string | undefined): Promise<string | null> {

@@ -26,3 +26,15 @@ describe("owner-published racing lines", () => {
     expect(result).toEqual({ version: 1, tracks: { spa: points, silverstone: points } });
   });
 });
+import { resolveRacingLine as resolveLine } from "./racing-lines";
+describe("resolveRacingLine", () => {
+  const shared = { version: 1, tracks: { monza: [{ x: 0.1, y: 0.1 }, { x: 0.5, y: 0.5 }, { x: 0.9, y: 0.2 }] } };
+  const device = [{ x: 0.2, y: 0.2 }, { x: 0.3, y: 0.3 }, { x: 0.4, y: 0.4 }];
+  const store = { getItem: () => JSON.stringify(device) };
+  it("prefers the shared collection over a device line", () => {
+    expect(resolveLine("Monza", store, [], shared)[0]).toEqual({ x: 0.1, y: 0.1 });
+  });
+  it("uses the device line only when the track is unpublished", () => {
+    expect(resolveLine("Imola", store, [], shared)).toEqual(device);
+  });
+});

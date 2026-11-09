@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { getActiveCareer } from "@/lib/career";
 import { trackMapUrl, trackMapFallbackUrl, trackSlug } from "@/lib/f1-shell";
 import { replayPair, lapProgress, liveGap, pointOnLine, ZANDVOORT_LINE, type Point, type QualiResult } from "@/lib/quali-simulation";
+import { resolveRacingLine } from "@/lib/racing-lines";
 
 type QualiSession = { id: string; driver_name: string; track_name: string; category: string; session_type: string; results: QualiResult[] };
 const format = (t: number) => `${Math.floor(t / 60)}:${(t % 60).toFixed(3).padStart(6, "0")}`;
@@ -54,15 +55,7 @@ export function QualifyingSimulation({ season, track, cat }: { season: number; t
     setImage(trackMapUrl(track));
     setImageFailed(false);
     setEditing(false);
-    let points = trackSlug(track) === "zandvoort" ? ZANDVOORT_LINE : [];
-    try {
-      const raw = localStorage.getItem(lineKey);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        if (Array.isArray(saved) && saved.length >= 3 && saved.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && p.x >= 0 && p.x <= 1 && p.y >= 0 && p.y <= 1)) points = saved;
-      }
-    } catch {}
-    setLine(points);
+    setLine(resolveRacingLine(track, localStorage, trackSlug(track) === "zandvoort" ? ZANDVOORT_LINE : []));
   }, [track, lineKey]);
 
   const session = sessions.find((s) => s.id === selected);

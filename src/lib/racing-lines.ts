@@ -19,6 +19,25 @@ export function sharedRacingLine(track: string, source: unknown = collection): P
   return validRacingLine(points) ? points.map((point) => ({ ...point })) : [];
 }
 
+/**
+ * One resolver for Quali Simulation and ERS: the shared site collection wins,
+ * then a device-saved line (only for tracks not yet published), then the fallback.
+ */
+export function resolveRacingLine(
+  track: string,
+  storage: Pick<Storage, "getItem"> | null,
+  fallback: Point[] = [],
+  source: unknown = collection,
+): Point[] {
+  const shared = sharedRacingLine(track, source);
+  if (shared.length) return shared;
+  try {
+    const saved: unknown = JSON.parse(storage?.getItem(`f1.quali.line.v1.${trackSlug(track)}`) ?? "null");
+    if (validRacingLine(saved)) return saved;
+  } catch { /* corrupt device entry */ }
+  return fallback;
+}
+
 /** Read-only migration export. No upload or publication endpoint exists in the app. */
 export function exportDeviceRacingLines(storage: Pick<Storage, "length" | "key" | "getItem">): RacingLineCollection {
   const tracks: Record<string, Point[]> = {};

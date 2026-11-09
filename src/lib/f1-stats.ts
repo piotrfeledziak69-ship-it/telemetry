@@ -292,7 +292,6 @@ export function computeTitleMath(
   };
 }
 
-<<<<<<< HEAD
 // ---------------------------------------------------------------
 // Season summary (share card)
 // ---------------------------------------------------------------
@@ -426,8 +425,6 @@ export function seasonSummary(sessions: Session[], season: number): SeasonSummar
   };
 }
 
-=======
->>>>>>> 1c6d288d5748ccd014853a524b7ead6ffafd2de5
 export type SeasonBest = {
   season: number;
   team: string;
@@ -446,11 +443,8 @@ export type TrackRecord = {
   secondBestMs: number | null;
   attempts: number;
   seasons: SeasonBest[];
-<<<<<<< HEAD
   firstAt: number; // earliest session upload time (ms epoch)
   lastAt: number; // latest session upload time (ms epoch)
-=======
->>>>>>> 1c6d288d5748ccd014853a524b7ead6ffafd2de5
 };
 
 function cleanTeam(t: unknown): string {
@@ -460,11 +454,7 @@ function cleanTeam(t: unknown): string {
 
 // Player's best lap per track across every uploaded season, with per-season bests.
 export function personalRecords(sessions: Session[]): TrackRecord[] {
-<<<<<<< HEAD
   type Lap = { ms: number; season: number; category: string; team: string; at: number };
-=======
-  type Lap = { ms: number; season: number; category: string; team: string };
->>>>>>> 1c6d288d5748ccd014853a524b7ead6ffafd2de5
   const byTrack = new Map<string, { track: string; laps: Lap[] }>();
   for (const s of sessions) {
     const player = playerNameOf(s);
@@ -478,11 +468,7 @@ export function personalRecords(sessions: Session[]): TrackRecord[] {
     if (!slug) continue;
     const team = cleanTeam(entry?.team || (s as any).race_story?.player_team || (s as any).team);
     const bucket = byTrack.get(slug) ?? { track: s.track_name, laps: [] };
-<<<<<<< HEAD
     bucket.laps.push({ ms, season: Number(s.season) || 1, category: s.category || "Race", team, at: Date.parse(s.created_at || "") || 0 });
-=======
-    bucket.laps.push({ ms, season: Number(s.season) || 1, category: s.category || "Race", team });
->>>>>>> 1c6d288d5748ccd014853a524b7ead6ffafd2de5
     byTrack.set(slug, bucket);
   }
   const out: TrackRecord[] = [];
@@ -516,11 +502,8 @@ export function personalRecords(sessions: Session[]): TrackRecord[] {
       secondBestMs: sorted.length > 1 ? sorted[1].ms : null,
       attempts: bucket.laps.length,
       seasons,
-<<<<<<< HEAD
       firstAt: Math.min(...bucket.laps.map((l) => l.at)),
       lastAt: Math.max(...bucket.laps.map((l) => l.at)),
-=======
->>>>>>> 1c6d288d5748ccd014853a524b7ead6ffafd2de5
     });
   }
   return out.sort((a, b) => a.track.localeCompare(b.track));
