@@ -47,6 +47,49 @@ export function scoreFromSpread(spread: number): number {
   return Math.round((100 / (1 + Math.pow(spread / HALF_SCORE_SPREAD_S, 1.5))) * 10) / 10;
 }
 
+function fitPaceTrend(points: { x: number; y: number }[], degree: 1 | 2) {
+  const size = degree + 1;
+  const center = (points[0].x + points[points.length - 1].x) / 2;
+  const scale = Math.max(...points.map((point) => Math.abs(point.x - center)));
+  if (!scale) return null;
+
+  const matrix = Array.from({ length: size }, () => Array(size + 1).fill(0));
+  for (const point of points) {
+    const x = (point.x - center) / scale;
+    const terms = Array.from({ length: size }, (_, power) => x ** power);
+    for (let row = 0; row < size; row++) {
+      for (let column = 0; column < size; column++) {
+        matrix[row][column] += terms[row] * terms[column];
+      }
+      matrix[row][size] += terms[row] * point.y;
+    }
+  }
+
+  for (let pivot = 0; pivot < size; pivot++) {
+    const divisor = matrix[pivot][pivot];
+    if (Math.abs(divisor) < 1e-10) return null;
+    for (let column = pivot; column <= size; column++) {
+      matrix[pivot][column] /= divisor;
+    }
+    for (let row = 0; row < size; row++) {
+      if (row === pivot) continue;
+      const factor = matrix[row][pivot];
+      for (let column = pivot; column <= size; column++) {
+        matrix[row][column] -= factor * matrix[pivot][column];
+      }
+    }
+  }
+
+  const coefficients = matrix.map((row) => row[size]);
+  return {
+    predict: (lap: number) => {
+      const x = (lap - center) / scale;
+      return coefficients.reduce((sum, coefficient, power) => sum + coefficient * x ** power, 0);
+    },
+    midpointSlope: (coefficients[1] ?? 0) / scale,
+  };
+}
+
 export type StintConsistency = {
   stint: number;
   compound: string;
@@ -71,22 +114,26 @@ export type Consistency = {
 };
 
 export function splitStints(laps: DebriefLap[]): DebriefLap[][] {
+  const sorted = [...laps].sort((a, b) => a.lap - b.lap);
+  const recordedPitLaps = recordedPitStopLaps(sorted);
+  const compoundChanges = compoundChangeLaps(sorted).filter(
+    (lap) => !recordedPitLaps.some((pitLap) => Math.abs(pitLap - lap) <= 1),
+  );
+  const pitLaps = new Set([...recordedPitLaps, ...compoundChanges]);
   const groups: DebriefLap[][] = [];
   let cur: DebriefLap[] = [];
-  let compound = laps[0]?.current_tyre_compound;
-  for (const [i, l] of laps.entries()) {
-    const nextCompound = l.current_tyre_compound;
-    const sustained = nextCompound && nextCompound === laps[i + 1]?.current_tyre_compound;
-    if (cur.length && nextCompound && nextCompound !== compound && sustained) {
+  let compound = sorted[0]?.current_tyre_compound;
+  for (const l of sorted) {
+    if (cur.length && compoundChanges.includes(l.lap)) {
       groups.push(cur);
       cur = [];
     }
-    compound = cur.length ? compound : (sustained || Number(l.pit_status || 0) > 0 ? nextCompound : compound || nextCompound);
+    const nextCompound = l.current_tyre_compound;
+    compound = cur.length ? compound : nextCompound || compound;
     cur.push({ ...l, current_tyre_compound: compound });
-    if (Number(l.pit_status || 0) === 1) {
+    if (pitLaps.has(l.lap)) {
       groups.push(cur);
       cur = [];
-      compound = undefined;
     }
   }
   if (cur.length) groups.push(cur);
@@ -95,15 +142,57 @@ export function splitStints(laps: DebriefLap[]): DebriefLap[][] {
 
 /** Recorded pit flags or a sustained compound transition, never a one-lap glitch. */
 export function verifiedPitLaps(laps: DebriefLap[]): number[] {
-  const recorded = laps.filter((l) => Number(l.pit_status || 0) === 1).map((l) => l.lap);
-  const groups = splitStints(laps);
-  for (let i = 1; i < groups.length; i++) {
-    const previous = groups[i - 1].at(-1);
-    if (previous && !recorded.some((lap) => Math.abs(lap - previous.lap) <= 1)) {
-      recorded.push(previous.lap);
+  const sorted = [...laps].sort((a, b) => a.lap - b.lap);
+  const recorded = recordedPitStopLaps(sorted);
+  const inferred = compoundChangeLaps(sorted).filter(
+    (lap) => !recorded.some((pitLap) => Math.abs(pitLap - lap) <= 1),
+  );
+  return [...recorded, ...inferred].sort((a, b) => a - b);
+}
+
+function recordedPitStopLaps(laps: DebriefLap[]): number[] {
+  const stops: number[] = [];
+  let confirmedLap: number | null = null;
+  let previousActiveLap: number | null = null;
+
+  const finishStop = () => {
+    if (confirmedLap !== null) stops.push(confirmedLap);
+    confirmedLap = null;
+    previousActiveLap = null;
+  };
+
+  for (const lap of laps) {
+    if (Number(lap.pit_status || 0) <= 0) {
+      finishStop();
+      continue;
+    }
+    if (previousActiveLap !== null && lap.lap > previousActiveLap + 1) finishStop();
+    if (Number(lap.pit_status || 0) === 1) confirmedLap ??= lap.lap;
+    previousActiveLap = lap.lap;
+  }
+  finishStop();
+  return stops;
+}
+
+function compoundChangeLaps(laps: DebriefLap[]): number[] {
+  const changes: number[] = [];
+  let compound = laps.find((lap) => lap.current_tyre_compound)?.current_tyre_compound;
+  for (let i = 1; i < laps.length - 1; i++) {
+    const previous = laps[i - 1];
+    const current = laps[i];
+    const next = laps[i + 1];
+    if (
+      current.lap === previous.lap + 1 &&
+      next.lap === current.lap + 1 &&
+      current.current_tyre_compound &&
+      current.current_tyre_compound !== compound &&
+      current.current_tyre_compound === next.current_tyre_compound
+    ) {
+      changes.push(previous.lap);
+      compound = current.current_tyre_compound;
     }
   }
-  return [...new Set(recorded)].sort((a, b) => a - b);
+  return changes;
 }
 
 export function classifyQualifyingLaps(laps: DebriefLap[]) {
@@ -123,10 +212,10 @@ export function classifyQualifyingLaps(laps: DebriefLap[]) {
 }
 
 /**
- * Race consistency: per stint, fit a straight trend through clean laps (this
- * absorbs fuel burn-off and steady tyre wear), then measure how far each lap
- * strays from that trend. Spread is scaled to a 90 s lap and weighted by
- * clean laps per stint.
+ * Race consistency: fit a per-stint pace trend through clean laps, allowing
+ * longer stints to model accelerating tyre degradation as well as fuel burn.
+ * Measure lap-to-trend variation, scaled to a 90 s lap and weighted by stint
+ * length.
  */
 export function raceConsistency(laps: DebriefLap[]): Consistency {
   const sorted = [...laps].filter((l) => Number(l.lap) > 0).sort((a, b) => a.lap - b.lap);
@@ -159,14 +248,16 @@ export function raceConsistency(laps: DebriefLap[]): Consistency {
     const pts = group.filter((l) => clean.has(l.lap)).map((l) => ({ x: l.lap, y: lapSeconds(l.lap_time) ?? 0 }));
     if (pts.length < 3) return;
     const n = pts.length;
+    const degree = n >= 6 ? 2 : 1;
+    const fittedTrend = n >= 4 ? fitPaceTrend(pts, degree) : null;
     const mx = pts.reduce((a, p) => a + p.x, 0) / n;
     const my = pts.reduce((a, p) => a + p.y, 0) / n;
-    const sxx = pts.reduce((a, p) => a + (p.x - mx) ** 2, 0);
-    // Short stints don't support a reliable slope; assume typical fuel burn.
-    const slope = n >= 4 && sxx > 0 ? pts.reduce((a, p) => a + (p.x - mx) * (p.y - my), 0) / sxx : -0.06;
-    const residuals = pts.map((p) => p.y - (my + slope * (p.x - mx)));
+    const slope = fittedTrend?.midpointSlope ?? -0.06;
+    const residuals = pts.map((p) =>
+      p.y - (fittedTrend?.predict(p.x) ?? my + slope * (p.x - mx)),
+    );
     const capped = residuals.map((r) => Math.max(-RESIDUAL_CAP_S, Math.min(RESIDUAL_CAP_S, r)));
-    const dof = Math.max(1, n - (n >= 4 ? 2 : 1));
+    const dof = Math.max(1, n - (fittedTrend ? degree + 1 : 1));
     const spread = Math.sqrt(capped.reduce((a, r) => a + r * r, 0) / dof);
     stints.push({
       stint: i + 1,
@@ -222,6 +313,16 @@ export function buildDebriefFacts(s: DebriefSession) {
   const pitLaps = verifiedPitLaps(laps);
   const times = laps.map((l) => lapSeconds(l.lap_time)).filter((t): t is number => t !== null);
   const bestLap = times.length ? Math.min(...times) : null;
+  const excludedLaps = new Set(consistency?.excluded.map((entry) => entry.lap) ?? []);
+  const cleanRaceLaps = isQuali
+    ? []
+    : laps
+        .filter((lap) => !excludedLaps.has(lap.lap))
+        .map((lap) => ({ lap: lap.lap, time_s: lapSeconds(lap.lap_time) }))
+        .filter((lap): lap is { lap: number; time_s: number } => lap.time_s !== null);
+  const cleanLapsByTime = [...cleanRaceLaps].sort((a, b) => a.time_s - b.time_s);
+  const bestCleanLap = cleanLapsByTime[0] ?? null;
+  const slowestCleanLap = cleanLapsByTime.at(-1) ?? null;
 
   const stints = splitStints(laps).map((g, i) => {
     const first = g[0];
@@ -247,7 +348,20 @@ export function buildDebriefFacts(s: DebriefSession) {
   const me = cls.find((c) => driverMatches(c.name, player));
   const nearby = me
     ? cls.filter((c) => Math.abs(Number(c.position) - Number(me.position)) <= 2 && c !== me)
-        .map((c) => ({ pos: c.position, name: c.name, team: c.team, best_lap: c.best_lap_str, pits: c.pits, status: c.status }))
+        .map((c) => {
+          const rivalBestLap = lapSeconds(c.best_lap_str);
+          return {
+            pos: c.position,
+            name: c.name,
+            team: c.team,
+            best_lap_s: rivalBestLap,
+            gap_to_driver_best_s: bestCleanLap && rivalBestLap !== null
+              ? r3(bestCleanLap.time_s - rivalBestLap)
+              : null,
+            pits: c.pits,
+            status: c.status,
+          };
+        })
     : [];
 
   const lastLap = laps[laps.length - 1];
@@ -275,6 +389,23 @@ export function buildDebriefFacts(s: DebriefSession) {
 
   const fuelStart = laps[0]?.fuel_kg ?? null;
   const fuelEnd = lastLap?.fuel_kg ?? null;
+  const paceLapNumbers = new Set(
+    isQuali
+      ? classifyQualifyingLaps(laps)
+          .filter((lap) => lap.role === "push")
+          .map((lap) => lap.lap)
+      : cleanRaceLaps.map((lap) => lap.lap),
+  );
+  const bestSectors = Object.fromEntries(
+    (["s1", "s2", "s3"] as const).flatMap((sector) => {
+      const best = laps
+        .filter((lap) => paceLapNumbers.has(lap.lap))
+        .map((lap) => ({ lap: lap.lap, time_s: lapSeconds(lap[sector]) }))
+        .filter((entry): entry is { lap: number; time_s: number } => entry.time_s !== null)
+        .sort((a, b) => a.time_s - b.time_s)[0];
+      return best ? [[sector, best]] : [];
+    }),
+  );
   return {
     track: s.track_name,
     session: s.session_type || s.category,
@@ -286,6 +417,15 @@ export function buildDebriefFacts(s: DebriefSession) {
     points: me?.points ?? null,
     laps_completed: laps.length,
     best_lap_s: bestLap !== null ? r3(bestLap) : null,
+    lap_pace: {
+      best_clean_lap: bestCleanLap && { ...bestCleanLap, time_s: r3(bestCleanLap.time_s) },
+      slowest_clean_lap: slowestCleanLap && { ...slowestCleanLap, time_s: r3(slowestCleanLap.time_s) },
+      median_clean_lap_s: cleanRaceLaps.length
+        ? r3(median(cleanRaceLaps.map((lap) => lap.time_s)))
+        : null,
+      clean_laps: cleanRaceLaps.length,
+      best_sectors: bestSectors,
+    },
     pit_laps: pitLaps,
     pit_stops: pitLaps.length,
     qualifying_laps: isQuali ? classifyQualifyingLaps(laps) : null,

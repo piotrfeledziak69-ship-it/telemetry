@@ -19,6 +19,13 @@ describe("race consistency", () => {
     expect(c.score).toBeGreaterThan(99);
   });
 
+  it("does not penalize accelerating tyre degradation on a long stint", () => {
+    const degradingPace = Array.from({ length: 18 }, (_, i) => 95 - i * 0.08 + i * i * 0.018);
+    const c = raceConsistency(laps(degradingPace));
+    expect(c.score).toBeGreaterThan(99);
+    expect(c.stints[0].trend).toBeGreaterThan(0);
+  });
+
   it("an 8 s spread scores far below a 2 s spread", () => {
     const wobble = (amp: number) => Array.from({ length: 16 }, (_, i) => 90 + (i % 2 ? amp / 2 : -amp / 2));
     const tight = raceConsistency(laps(wobble(2))).score!;
@@ -52,6 +59,29 @@ describe("debrief facts", () => {
     expect(facts.pit_laps).toEqual([2]);
     expect(facts.pit_stops).toBe(1);
   });
+  it("does not split one recorded stop twice when the tyre compound changes", () => {
+    const data = laps([90, 90, 110, 95, 94, 93], (n) => ({
+      pit_status: n === 3 ? 1 : n === 4 ? 2 : 0,
+      current_tyre_compound: n >= 4 ? "Hard" : "Medium",
+    }));
+    expect(verifiedPitLaps(data)).toEqual([3]);
+    expect(splitStints(data).map((stint) => [stint[0].lap, stint.at(-1)?.lap])).toEqual([[1, 3], [4, 6]]);
+    expect(buildDebriefFacts({ track_name: "Spa", category: "Race", lap_history: data }).pit_stops).toBe(1);
+  });
+  it("counts a continuous multi-lap pit-status signal as one stop", () => {
+    const data = laps([90, 110, 109, 95, 94], (n) => ({
+      pit_status: n === 2 || n === 3 ? 1 : n === 4 ? 2 : 0,
+    }));
+    expect(verifiedPitLaps(data)).toEqual([2]);
+    expect(buildDebriefFacts({ track_name: "Spa", category: "Race", lap_history: data }).pit_stops).toBe(1);
+  });
+  it("still counts separate recorded stops independently", () => {
+    const data = laps([90, 110, 95, 94, 110, 95, 94], (n) => ({
+      pit_status: n === 2 || n === 5 ? 1 : n === 3 || n === 6 ? 2 : 0,
+    }));
+    expect(verifiedPitLaps(data)).toEqual([2, 5]);
+    expect(buildDebriefFacts({ track_name: "Spa", category: "Race", lap_history: data }).pit_stops).toBe(2);
+  });
 
   it("accepts exactly 108% as push pace, not slower cooldown laps", () => {
     expect(classifyQualifyingLaps(laps([100, 108, 108.001])).map((l) => l.role)).toEqual(["push", "push", "cooldown/recharge"]);
@@ -80,5 +110,19 @@ describe("debrief facts", () => {
     expect((f.quali as any).gap_to_pole_s).toBe(0.3);
     expect((f.quali as any).sector_gap_to_pole_s).toEqual([0.1, 0, 0.2]);
     expect(f.consistency).toBeNull();
+  });
+  it("gives the debrief lap-numbered pace and sector evidence", () => {
+    const data = laps([90, 91, 89, 90], (n) => ({
+      s1: `${29 + n / 1000}`,
+      s2: "30.000",
+      s3: "30.000",
+    }));
+    const facts = buildDebriefFacts({ track_name: "Spa", category: "Race", lap_history: data });
+    expect(facts.lap_pace.best_clean_lap).toEqual({ lap: 3, time_s: 89 });
+    expect(facts.lap_pace.slowest_clean_lap).toEqual({ lap: 2, time_s: 91 });
+    expect(facts.lap_pace.best_sectors).toHaveProperty("s1");
+    expect(facts.lap_pace.best_sectors).toHaveProperty("s2");
+    expect(facts.lap_pace.best_sectors).toHaveProperty("s3");
+    expect(facts.lap_pace.best_sectors.s1).toEqual({ lap: 2, time_s: 29.002 });
   });
 });
