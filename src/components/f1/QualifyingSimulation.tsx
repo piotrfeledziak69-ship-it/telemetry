@@ -6,7 +6,8 @@ import { getActiveCareer } from "@/lib/career";
 import { trackMapUrl, trackMapFallbackUrl, trackSlug } from "@/lib/f1-shell";
 import { replayPair, lapProgress, liveGap, pointOnLine, type Point, type QualiResult } from "@/lib/quali-simulation";
 import { RacingLineActions } from "./RacingLineActions";
-import { downloadRacingLineCollection, sharedRacingLine } from "@/lib/racing-lines";
+import { resolveRacingLine, sharedRacingLine } from "@/lib/racing-lines";
+import { loadTrackData, saveTrackData } from "@/lib/track-cloud";
 
 type QualiSession = { id: string; driver_name: string; track_name: string; category: string; session_type: string; results: QualiResult[] };
 const format = (t: number) => `${Math.floor(t / 60)}:${(t % 60).toFixed(3).padStart(6, "0")}`;
@@ -57,6 +58,9 @@ export function QualifyingSimulation({ season, track, cat }: { season: number; t
     setEditing(false);
     setLine(sharedRacingLine(track));
     setLineMessage("");
+    let live = true;
+    loadTrackData("racing_line", trackSlug(track)).then((saved) => { if (live && saved) setLine(resolveRacingLine(track, saved)); }).catch(() => {});
+    return () => { live = false; };
   }, [track]);
 
   const session = sessions.find((s) => s.id === selected);
@@ -96,15 +100,15 @@ export function QualifyingSimulation({ season, track, cat }: { season: number; t
     return () => window.removeEventListener("keydown", onKey);
   }, [editing, pair, line.length, elapsed, duration]);
 
-  function saveLine() {
+  async function saveLine() {
     if (draft.length < 3) return;
+    setLine(draft);
+    setEditing(false);
     try {
-      downloadRacingLineCollection(track, draft);
-      setLine(draft);
-      setEditing(false);
-      setLineMessage("Collection downloaded. Replace src/data/racing-lines.json and redeploy to publish it for everyone.");
-    } catch (e) {
-      setLineMessage(e instanceof Error ? e.message : "The racing-line collection couldn't be downloaded.");
+      const ok = await saveTrackData("racing_line", trackSlug(track), draft);
+      setLineMessage(ok ? "Saved to your account — it now shows on all your devices." : "Line updated here. Sign in to keep it on all your devices.");
+    } catch {
+      setLineMessage("Line updated here, but saving to your account failed. Try again later.");
     }
   }
   const visibleLine = editing ? draft : line;

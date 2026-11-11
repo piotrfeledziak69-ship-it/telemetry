@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
-import { Download, Sparkles } from "lucide-react";
+import { CloudUpload, Download, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { generateRacingLineDraft } from "@/lib/racing-line-ai.functions";
 import { downloadRacingLineCollection, validRacingLine } from "@/lib/racing-lines";
+import { saveTrackData } from "@/lib/track-cloud";
+import { trackSlug } from "@/lib/f1-shell";
 import type { Point } from "@/lib/quali-simulation";
 
 type Props = {
@@ -66,11 +68,23 @@ export function RacingLineActions({ track, mapUrl, line, onDraft }: Props) {
         return;
       }
       onDraft(result.points);
-      setMessage("AI draft ready. Check the route and start/finish position before exporting. The map image was sent to Google Gemini.");
+      setMessage("AI draft ready. Check the route and start/finish position, then save it to your account.");
     } catch (e) {
       if (request === requestId.current) setError(e instanceof Error ? e.message : "The AI draft couldn't be generated. Try again.");
     } finally {
       if (request === requestId.current) setBusy(false);
+    }
+  }
+
+  async function saveToAccount() {
+    if (!validRacingLine(line)) return;
+    setError("");
+    try {
+      const ok = await saveTrackData("racing_line", trackSlug(track), line);
+      if (!ok) { setError("Sign in to save this line to your account."); return; }
+      setMessage("Saved to your account — this line now shows on all your devices, in Qualifying and ERS Map.");
+    } catch {
+      setError("Couldn't save to your account. If this keeps happening, the track-data table may not be set up yet.");
     }
   }
 
@@ -92,11 +106,14 @@ export function RacingLineActions({ track, mapUrl, line, onDraft }: Props) {
           <Sparkles />{busy ? "Tracing map…" : "AI draw line"}
         </Button>
         <Button variant="outline" className="flex-1" disabled={!validRacingLine(line)} onClick={exportCollection}>
-          <Download />Download to publish
+          <Download />Download
         </Button>
       </div>
+      <Button className="w-full" disabled={!validRacingLine(line)} onClick={saveToAccount}>
+        <CloudUpload />Save line to my account
+      </Button>
       <p className="text-xs text-muted-foreground">
-        AI sends the track-map image to Google Gemini; it uses no lap times or movement telemetry. Review the draft before downloading the shared collection.
+        AI sends the track-map image to Google Gemini; it uses no lap times or movement telemetry. Review the draft, then save it to your account so it follows you to every device.
       </p>
       {message && <p role="status" className="text-xs text-muted-foreground">{message}</p>}
       {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

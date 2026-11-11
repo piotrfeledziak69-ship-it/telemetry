@@ -67,3 +67,37 @@ export function exportDeviceRacingLines(storage: Pick<Storage, "length" | "key" 
   }
   return { version: 1, tracks };
 }
+/** A line the signed-in user saved to their account wins over the published collection. */
+export function resolveRacingLine(track: string, accountLine: unknown, source: unknown = collection): Point[] {
+  if (validRacingLine(accountLine)) return accountLine.map((point) => ({ x: point.x, y: point.y }));
+  return sharedRacingLine(track, source);
+}
+
+/**
+ * Clean an AI trace: drop near-duplicate and closing points, then resample to
+ * evenly spaced points along the closed loop so playback and ERS painting are smooth.
+ */
+export function resampleClosedLine(points: Point[], count = 120): Point[] {
+  const pts: Point[] = [];
+  for (const p of points) {
+    const last = pts[pts.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) > 0.002) pts.push({ x: p.x, y: p.y });
+  }
+  while (pts.length > 3 && Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) < 0.002) pts.pop();
+  if (pts.length < 3) return pts;
+  const loop = [...pts, pts[0]];
+  const cum = [0];
+  for (let i = 1; i < loop.length; i++) cum.push(cum[i - 1] + Math.hypot(loop[i].x - loop[i - 1].x, loop[i].y - loop[i - 1].y));
+  const total = cum[cum.length - 1];
+  const out: Point[] = [];
+  let j = 1;
+  for (let k = 0; k < count; k++) {
+    const d = (k / count) * total;
+    while (j < cum.length - 1 && cum[j] < d) j++;
+    const span = cum[j] - cum[j - 1] || 1;
+    const t = (d - cum[j - 1]) / span;
+    const a = loop[j - 1], b = loop[j];
+    out.push({ x: Math.min(1, Math.max(0, a.x + (b.x - a.x) * t)), y: Math.min(1, Math.max(0, a.y + (b.y - a.y) * t)) });
+  }
+  return out;
+}

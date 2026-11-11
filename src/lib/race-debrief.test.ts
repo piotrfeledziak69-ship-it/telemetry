@@ -8,10 +8,10 @@ function laps(times: number[], extra: (i: number) => Partial<DebriefLap> = () =>
 
 describe("race consistency", () => {
   it("scores the published reference points", () => {
-    expect(scoreFromSpread(0.1)).toBeCloseTo(94.9, 0);
-    expect(scoreFromSpread(0.3)).toBeCloseTo(78.1, 0);
-    expect(scoreFromSpread(0.7)).toBe(50);
-    expect(scoreFromSpread(1)).toBeCloseTo(37, 0);
+    expect(scoreFromSpread(0.2)).toBeCloseTo(91.8, 0);
+    expect(scoreFromSpread(0.5)).toBeCloseTo(73.9, 0);
+    expect(scoreFromSpread(1)).toBe(50);
+    expect(scoreFromSpread(2)).toBeCloseTo(26.1, 0);
   });
 
   it("does not punish steady fuel burn: laps 0.08 s quicker every lap score ~100", () => {
@@ -24,6 +24,14 @@ describe("race consistency", () => {
     const c = raceConsistency(laps(degradingPace));
     expect(c.score).toBeGreaterThan(99);
     expect(c.stints[0].trend).toBeGreaterThan(0);
+  });
+
+  it("a tidy race with normal traffic laps no longer lands around 50", () => {
+    const noise = [0.2, -0.3, 0.1, -0.1, 0.3, -0.2, 0.0, 0.2, -0.3, 0.1, -0.1, 0.25, -0.15, 0.05, -0.2, 0.1, 0.0, -0.1];
+    const pace = noise.map((n, i) => 92 - i * 0.05 + n);
+    pace[7] += 1.2; pace[13] += 1.3; // stuck behind a car twice
+    const c = raceConsistency(laps(pace));
+    expect(c.score).toBeGreaterThan(65);
   });
 
   it("an 8 s spread scores far below a 2 s spread", () => {

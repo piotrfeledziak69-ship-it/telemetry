@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { Copy, Download, Minus, Pencil, Plus, Trash2, Upload, X, Check } from "lucide-react";
+import { Copy, Download, Minus, Pencil, Plus, Trash2, Upload, X, Check, Undo2, Cloud, CloudOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { trackMapUrl, trackMapFallbackUrl, trackSlug } from "@/lib/f1-shell";
 import type { Point } from "@/lib/quali-simulation";
-import { sharedRacingLine } from "@/lib/racing-lines";
+import { resolveRacingLine, sharedRacingLine } from "@/lib/racing-lines";
+import { loadTrackData, saveTrackData } from "@/lib/track-cloud";
 import { RacingLineActions } from "./RacingLineActions";
 import {
   coverage, ersKeys, isValidSegment, lapOrder, nudge, pointAtProgress, projectOnLine, segmentSpan, sliceLine,
@@ -39,6 +40,32 @@ function loadSlots(slug: string, mode: ErsMode): ErsSlotMeta[] {
   return valid.length ? valid : [{ id: "slot1", name: "Slot 1" }];
 }
 
+type ErsBundle = { version: 1; palette: ErsColor[]; modes: Record<ErsMode, (ErsSlotMeta & { segments: ErsSegment[] })[]> };
+
+function bundleFromDevice(slug: string): ErsBundle {
+  const modes = {} as ErsBundle["modes"];
+  for (const m of ["race", "quali"] as ErsMode[]) modes[m] = loadSlots(slug, m).map((s) => ({ ...s, segments: loadSegments(slug, m, s.id) }));
+  return { version: 1, palette: readJson<ErsColor[]>(ersKeys.palette, []), modes };
+}
+
+function writeBundleToDevice(slug: string, data: any) {
+  if (!data || typeof data !== "object" || typeof data.modes !== "object") return;
+  const incoming: ErsColor[] = Array.isArray(data.palette) ? data.palette.filter((c: ErsColor) => c?.id && c?.name && /^#[0-9a-f]{6}$/i.test(c.color)) : [];
+  const local = readJson<ErsColor[]>(ersKeys.palette, []);
+  const merged = [...(Array.isArray(local) ? local : []), ...incoming.filter((c) => !local.some?.((p) => p.id === c.id))];
+  localStorage.setItem(ersKeys.palette, JSON.stringify(merged));
+  for (const m of ["race", "quali"] as ErsMode[]) {
+    const list = Array.isArray(data.modes[m]) ? data.modes[m] : [];
+    const metas: ErsSlotMeta[] = [];
+    for (const s of list) {
+      if (!s || typeof s.id !== "string" || typeof s.name !== "string") continue;
+      metas.push({ id: s.id, name: s.name.slice(0, 40) });
+      localStorage.setItem(ersKeys.map(slug, m, s.id), JSON.stringify((Array.isArray(s.segments) ? s.segments : []).filter(isValidSegment)));
+    }
+    if (metas.length) localStorage.setItem(ersKeys.slots(slug, m), JSON.stringify(metas));
+  }
+}
+
 function loadSegments(slug: string, mode: ErsMode, slotId: string): ErsSegment[] {
   const segs = readJson<unknown[]>(ersKeys.map(slug, mode, slotId), []);
   return Array.isArray(segs) ? segs.filter(isValidSegment) : [];
@@ -64,6 +91,10 @@ export function ErsMapEditor({ season, track, cat }: { season: number; track: st
   const [slotName, setSlotName] = useState<{ mode: "new" | "rename"; value: string } | null>(null);
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const [history, setHistory] = useState<ErsSegment[][]>([]);
+  const [sync, setSync] = useState<"local" | "loading" | "saved" | "saving" | "error">("loading");
+  const pushTimer = useRef<number | undefined>(undefined);
+  const [cloudTick, setCloudTick] = useState(0);
 
   // Load palette + racing line on mount / track change (browser only).
   useEffect(() => {
@@ -74,7 +105,32 @@ export function ErsMapEditor({ season, track, cat }: { season: number; track: st
     setLine(loadLine(track));
     setImage(trackMapUrl(track));
     setImageFailed(false);
-  }, [track]);
+    let live = true;
+    setSync("loading");
+    (async () => {
+      try {
+        const [savedLine, bundle] = await Promise.all([
+          loadTrackData("racing_line", slug),
+          loadTrackData("ers", slug),
+        ]);
+        if (!live) return;
+        if (savedLine) setLine(resolveRacingLine(track, savedLine));
+        if (bundle) {
+          writeBundleToDevice(slug, bundle);
+          const p2 = readJson<ErsColor[]>(ersKeys.palette, []);
+          setPalette(p2);
+          setActiveColor((cur) => cur || p2[0]?.id || "");
+          setCloudTick((t) => t + 1);
+        }
+        const { supabase } = await import("@/lib/supabase");
+        const { data } = await supabase.auth.getSession();
+        if (live) setSync(data.session ? "saved" : "local");
+      } catch {
+        if (live) setSync("error");
+      }
+    })();
+    return () => { live = false; };
+  }, [track, slug]);
 
   // Load slots for this track + mode.
   useEffect(() => {
@@ -87,12 +143,28 @@ export function ErsMapEditor({ season, track, cat }: { season: number; track: st
     setPending(null);
     setSelectedSeg(null);
     setReady(true);
-  }, [slug, mode]);
+    setHistory([]);
+  }, [slug, mode, cloudTick]);
+
+  function scheduleCloudPush() {
+    if (sync === "local") return;
+    window.clearTimeout(pushTimer.current);
+    pushTimer.current = window.setTimeout(async () => {
+      setSync("saving");
+      try {
+        const ok = await saveTrackData("ers", slug, bundleFromDevice(slug));
+        setSync(ok ? "saved" : "local");
+      } catch {
+        setSync("error");
+      }
+    }, 800);
+  }
 
   function persist(key: string, value: unknown) {
     try {
       localStorage.setItem(key, JSON.stringify(value));
       setError("");
+      scheduleCloudPush();
     } catch {
       setError("Couldn't save on this device — storage may be full.");
     }
@@ -100,13 +172,25 @@ export function ErsMapEditor({ season, track, cat }: { season: number; track: st
 
   function savePalette(next: ErsColor[]) { setPalette(next); persist(ersKeys.palette, next); }
   function saveSlots(next: ErsSlotMeta[]) { setSlots(next); persist(ersKeys.slots(slug, mode), next); }
-  function saveSegments(next: ErsSegment[]) { setSegments(next); persist(ersKeys.map(slug, mode, slotId), next); }
+  function saveSegments(next: ErsSegment[], undoable = true) {
+    if (undoable) setHistory((h) => [...h.slice(-29), segments]);
+    setSegments(next);
+    persist(ersKeys.map(slug, mode, slotId), next);
+  }
+  function undo() {
+    const prev = history[history.length - 1];
+    if (!prev) return;
+    setHistory((h) => h.slice(0, -1));
+    saveSegments(prev, false);
+    setSelectedSeg(null);
+  }
 
   function switchSlot(id: string) {
     setSlotId(id);
     setSegments(loadSegments(slug, mode, id));
     setPending(null);
     setSelectedSeg(null);
+    setHistory([]);
     persist(ersKeys.activeSlot(slug, mode), id);
   }
 
@@ -223,6 +307,17 @@ export function ErsMapEditor({ season, track, cat }: { season: number; track: st
     }
   }
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (/INPUT|SELECT|TEXTAREA/.test(t.tagName)) return;
+      if (e.key === "Escape") { setPending(null); setSelectedSeg(null); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
   const colorOf = (id: string) => palette.find((c) => c.id === id);
   const ordered = useMemo(() => lapOrder(segments), [segments]);
   const cover = useMemo(() => coverage(segments), [segments]);
@@ -241,30 +336,48 @@ export function ErsMapEditor({ season, track, cat }: { season: number; track: st
           ))}
         </div>
         <span className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          Saved on this device for every season at this track
+          <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-semibold ${sync === "error" ? "border-destructive/50 text-destructive" : sync === "local" ? "border-border" : "border-primary/40 text-foreground"}`} role="status">
+            {sync === "local" || sync === "error" ? <CloudOff className="h-3.5 w-3.5" /> : <Cloud className="h-3.5 w-3.5" />}
+            {sync === "loading" ? "Loading your maps…" : sync === "saving" ? "Saving…" : sync === "saved" ? "Synced to your account" : sync === "error" ? "Sync failed — saved on this device" : "This device only — sign in to sync"}
+          </span>
+          <Button variant="outline" size="sm" className="h-7" disabled={!history.length} onClick={undo} title="Undo (Ctrl+Z)"><Undo2 />Undo</Button>
           <Link to="/season/$season/track/$track/$view" params={{ season: String(season), track, view: "quali-simulation" }} search={{ cat }} className="font-semibold text-primary underline-offset-2 hover:underline">Edit racing line (shared with Qualifying)</Link>
         </span>
       </div>
 
       <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] lg:items-start">
         <div className="min-w-0">
-          <div className="relative aspect-[1080/608] w-full overflow-hidden rounded-md border border-border bg-background">
+          <div className="relative aspect-[1080/608] w-full overflow-hidden rounded-xl border border-border bg-gradient-to-b from-card to-background shadow-lg">
             {!imageFailed && (
-              <img src={image} alt={`${track} circuit`} className="absolute inset-0 h-full w-full object-fill opacity-60" onError={() => {
+              <img src={image} alt={`${track} circuit`} className="absolute inset-0 h-full w-full object-fill opacity-40" onError={() => {
                 if (image !== trackMapFallbackUrl(track)) setImage(trackMapFallbackUrl(track)); else setImageFailed(true);
               }} />
             )}
             {hasLine ? (
               <svg viewBox="0 0 1080 608" className="absolute inset-0 h-full w-full cursor-crosshair touch-manipulation" role="img" aria-label="ERS map — tap a start point, then an end point" onClick={onMapClick}>
-                <polyline points={toSvg([...line, line[0]])} fill="none" stroke="currentColor" strokeOpacity="0.35" strokeWidth="6" strokeLinejoin="round" className="text-foreground" />
+                <polyline points={toSvg([...line, line[0]])} fill="none" stroke="currentColor" strokeOpacity="0.12" strokeWidth="18" strokeLinejoin="round" className="text-foreground" />
+                <polyline points={toSvg([...line, line[0]])} fill="none" stroke="currentColor" strokeOpacity="0.45" strokeWidth="5" strokeLinejoin="round" strokeDasharray="2 10" strokeLinecap="round" className="text-foreground" />
                 {segments.map((s) => {
                   const c = colorOf(s.colorId);
                   if (!c) return null;
                   const sel = s.id === selectedSeg;
                   return (
-                    <polyline key={s.id} points={toSvg(sliceLine(line, s.start, s.end))} fill="none" stroke={c.color}
-                      strokeWidth={sel ? 14 : 10} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={selectedSeg && !sel ? 0.75 : 1} />
+                    <g key={s.id} className="cursor-pointer">
+                      <polyline points={toSvg(sliceLine(line, s.start, s.end))} fill="none" stroke={c.color}
+                        strokeWidth={sel ? 26 : 20} strokeOpacity="0.18" strokeLinecap="round" strokeLinejoin="round" />
+                      <polyline points={toSvg(sliceLine(line, s.start, s.end))} fill="none" stroke={c.color}
+                        strokeWidth={sel ? 13 : 9} strokeLinecap="round" strokeLinejoin="round" strokeOpacity={selectedSeg && !sel ? 0.6 : 1} />
+                    </g>
                   );
+                })}
+                {ordered.map((s, i) => {
+                  const c = colorOf(s.colorId);
+                  if (!c) return null;
+                  const p = pointAtProgress(line, (s.start + segmentSpan(s.start, s.end) / 2) % 1);
+                  return <g key={`l-${s.id}`} transform={`translate(${p.x * 1080} ${p.y * 608})`} className="pointer-events-none">
+                    <circle r="13" fill="var(--background)" stroke={c.color} strokeWidth="3" />
+                    <text textAnchor="middle" dy="5" fontSize="14" fontWeight="700" fill="currentColor" className="text-foreground">{i + 1}</text>
+                  </g>;
                 })}
                 {(() => { const p = pointAtProgress(line, 0); return <g transform={`translate(${p.x * 1080} ${p.y * 608})`}><rect x="-4" y="-14" width="8" height="28" rx="2" fill="currentColor" className="text-foreground" /></g>; })()}
                 {selectedSeg && (() => {
@@ -304,7 +417,7 @@ export function ErsMapEditor({ season, track, cat }: { season: number; track: st
           )}
         </div>
 
-        <aside className="flex min-w-0 flex-col gap-4 rounded-md border border-border bg-card/40 p-3" aria-label="ERS map controls">
+        <aside className="flex min-w-0 flex-col gap-4 rounded-xl border border-border bg-card/60 p-4 shadow-sm" aria-label="ERS map controls">
           <RacingLineActions
             track={track}
             mapUrl={image}
@@ -391,14 +504,14 @@ export function ErsMapEditor({ season, track, cat }: { season: number; track: st
             </div>
             {segments.length === 0 && <p className="text-sm text-muted-foreground">No sections painted yet.</p>}
             <ul className="flex flex-col gap-1.5">
-              {ordered.map((s) => {
+              {ordered.map((s, idx) => {
                 const c = colorOf(s.colorId);
                 const sel = s.id === selectedSeg;
                 return (
                   <li key={s.id} className={`rounded-md border p-2 ${sel ? "border-primary bg-primary/5" : "border-border"}`}>
                     <div className="flex items-center gap-2">
                       <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => setSelectedSeg(sel ? null : s.id)} aria-expanded={sel}>
-                        <span className="h-3 w-3 shrink-0 rounded-full" style={{ background: c?.color }} />
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-background" style={{ background: c?.color }}>{idx + 1}</span>
                         <span className="truncate text-sm font-semibold">{c?.name ?? "Removed colour"}</span>
                         <span className="ml-auto shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{pct(s.start)} → {pct(s.end)} · {pct(segmentSpan(s.start, s.end))}</span>
                       </button>

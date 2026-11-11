@@ -36,12 +36,17 @@ const median = (v: number[]) => {
 export const REFERENCE_LAP_S = 90;
 /** Residual cap: one big mistake costs points but can't erase a whole stint. */
 export const RESIDUAL_CAP_S = 1.5;
-/** Spread (seconds, scaled to a 90 s lap) that scores 50/100. */
-export const HALF_SCORE_SPREAD_S = 0.7;
+/**
+ * Spread (seconds, scaled to a 90 s lap) that scores 50/100. Calibrated for
+ * racing in traffic: 0.7 s of RMS put almost every real race near 50.
+ */
+export const HALF_SCORE_SPREAD_S = 1.0;
+/** Each mistake lap (as a share of clean laps) removes up to this fraction of the score. */
+export const MISTAKE_PENALTY = 0.5;
 /** A clean lap this far above the stint trend counts as a mistake lap. */
 export const MISTAKE_S = 1.0;
 
-/** Score from spread around the stint trend line. 0.1 s ≈ 95, 0.3 s ≈ 78, 0.6 s ≈ 56, 1 s ≈ 37. */
+/** Score from spread around the stint trend line. 0.2 s ≈ 92, 0.5 s ≈ 74, 1 s = 50, 2 s ≈ 26. */
 export function scoreFromSpread(spread: number): number {
   if (!Number.isFinite(spread) || spread < 0) return 0;
   return Math.round((100 / (1 + Math.pow(spread / HALF_SCORE_SPREAD_S, 1.5))) * 10) / 10;
@@ -258,7 +263,13 @@ export function raceConsistency(laps: DebriefLap[]): Consistency {
     );
     const capped = residuals.map((r) => Math.max(-RESIDUAL_CAP_S, Math.min(RESIDUAL_CAP_S, r)));
     const dof = Math.max(1, n - (fittedTrend ? degree + 1 : 1));
-    const spread = Math.sqrt(capped.reduce((a, r) => a + r * r, 0) / dof);
+    const rms = Math.sqrt(capped.reduce((a, r) => a + r * r, 0) / dof);
+    // Robust spread: traffic / DRS-train laps are outliers, not inconsistency.
+    // Blend a MAD-based sigma with the capped RMS so a few lost laps don't
+    // dominate, while mistakes are still penalised separately below.
+    const med = median(residuals);
+    const mad = 1.4826 * median(residuals.map((r) => Math.abs(r - med)));
+    const spread = Math.min(rms, 0.7 * mad + 0.3 * rms);
     stints.push({
       stint: i + 1,
       compound: group[0]?.current_tyre_compound || "",
@@ -277,8 +288,10 @@ export function raceConsistency(laps: DebriefLap[]): Consistency {
   const spread = stints.reduce((a, s) => a + s.spread * (s.cleanLaps / cleanLaps), 0);
   const ref = median(sorted.filter((l) => clean.has(l.lap)).map((l) => lapSeconds(l.lap_time) ?? 0));
   const scaled = spread * (REFERENCE_LAP_S / ref);
+  const mistakes = stints.reduce((a, s) => a + s.mistakeLaps.length, 0);
+  const penalty = 1 - MISTAKE_PENALTY * Math.min(1, mistakes / cleanLaps);
   return {
-    score: scoreFromSpread(scaled),
+    score: Math.round(scoreFromSpread(scaled) * penalty * 10) / 10,
     spread: Math.round(spread * 1000) / 1000,
     scaledSpread: Math.round(scaled * 1000) / 1000,
     cleanLaps,
