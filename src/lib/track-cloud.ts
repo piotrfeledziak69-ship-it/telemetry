@@ -27,5 +27,16 @@ export async function saveTrackData(kind: TrackDataKind, slug: string, value: un
     { onConflict: "user_id,kind,track_slug" },
   );
   if (error) throw error;
+  const saved = await loadTrackData<unknown>(kind, slug);
+  if (JSON.stringify(saved) !== JSON.stringify(value)) {
+    // JSONB may reorder object keys; compare canonical values instead.
+    if (canonical(saved) !== canonical(value)) throw new Error("The saved map could not be verified. Try saving again.");
+  }
   return true;
+}
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, v]) => `${JSON.stringify(key)}:${canonical(v)}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
 }

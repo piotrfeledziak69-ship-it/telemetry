@@ -17,6 +17,8 @@ export const Route = createFileRoute("/records")({
       { name: "description", content: "Your fastest lap on every track across all seasons." },
       { property: "og:title", content: "Personal Records · F1 Telemetry Analyzer" },
       { property: "og:description", content: "Your fastest lap on every track across all seasons." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
     ],
   }),
   component: RecordsPage,
