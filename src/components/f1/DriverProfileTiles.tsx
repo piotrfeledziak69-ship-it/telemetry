@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { DriverProfile } from "@/components/f1/DriverProfileDialog";
 import { canonicalTeam } from "@/lib/driver-identity";
+import { DriverCompare } from "@/components/f1/DriverCompare";
 
 const TEAM_COLORS: Record<string, string> = {
   Mercedes: "#27f4d2",
@@ -100,6 +101,7 @@ export function DriverProfileTiles({
           </button>
         ))}
       </div>
+      <DriverCompare drivers={drivers} />
     </div>
   );
 }
